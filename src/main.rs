@@ -2,8 +2,8 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 use crate::engine::{run_engine, PaymentsEngine};
-use crate::producer::{run_producer, CSVTransactionEventProducer};
-use crate::types::TransactionEvent;
+use crate::producer::{run_producer, CSVTransactionProducer};
+use crate::types::Transaction;
 
 const DECIMAL_MAX_PRECISION: u32 = 4;
 
@@ -46,7 +46,7 @@ mod types {
     }
 
     #[derive(Debug, Clone, Copy)]
-    pub enum TransactionEvent {
+    pub enum Transaction {
         Deposit {
             account_id: AccountId,
             transaction_id: TxId,
@@ -54,7 +54,7 @@ mod types {
         },
     }
 
-    impl TransactionEvent {
+    impl Transaction {
         pub fn account_id(&self) -> AccountId {
             match *self {
                 Self::Deposit { account_id, .. } => account_id,
@@ -71,11 +71,11 @@ mod engine {
     use anyhow::Result;
     use tokio::sync::mpsc;
 
-    use crate::types::{Account, AccountId, Handle, TransactionEvent};
+    use crate::types::{Account, AccountId, Handle, Transaction};
 
     #[derive(Debug)]
     pub enum PaymentsEngineMessage {
-        ProcessTxEvent(TransactionEvent),
+        ProcessTx(Transaction),
     }
 
     pub struct PaymentsEngine {
@@ -95,21 +95,21 @@ mod engine {
 
         pub async fn handle_message(&mut self, msg: PaymentsEngineMessage) -> Result<()> {
             match msg {
-                PaymentsEngineMessage::ProcessTxEvent(tx) => self.process_transaction_event(tx),
+                PaymentsEngineMessage::ProcessTx(tx) => self.process_transaction(tx),
             }
             .await
         }
 
-        pub async fn process_transaction_event(&mut self, tx: TransactionEvent) -> Result<()> {
+        pub async fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
             println!("Engine: got tx {:?}", tx);
             match self.account_workers.get(&tx.account_id()) {
-                Some(s) => s.send(WorkerMessage::ProcessTxEvent(tx)).await?,
+                Some(s) => s.send(WorkerMessage::ProcessTx(tx)).await?,
                 None => {
                     let account_id = tx.account_id();
                     let (sender, receiver) = mpsc::channel(64);
                     let worker = AccountWorker::new(receiver, Account::new(account_id));
                     let join = tokio::spawn(run_worker(worker));
-                    sender.send(WorkerMessage::ProcessTxEvent(tx)).await?;
+                    sender.send(WorkerMessage::ProcessTx(tx)).await?;
                     self.account_workers.insert(account_id, sender);
                     self.worker_joins.push((account_id, join));
                 }
@@ -148,7 +148,7 @@ mod engine {
 
     #[derive(Debug)]
     enum WorkerMessage {
-        ProcessTxEvent(TransactionEvent),
+        ProcessTx(Transaction),
     }
 
     struct AccountWorker {
@@ -167,7 +167,7 @@ mod engine {
 
         fn handle_message(&mut self, msg: WorkerMessage) {
             let result = match msg {
-                WorkerMessage::ProcessTxEvent(tx) => self.process_transaction_event(tx),
+                WorkerMessage::ProcessTx(tx) => self.process_transaction(tx),
             };
             if let Err(e) = result {
                 eprintln!(
@@ -179,9 +179,9 @@ mod engine {
             };
         }
 
-        fn process_transaction_event(&mut self, tx: TransactionEvent) -> Result<()> {
+        fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
             match tx {
-                TransactionEvent::Deposit {
+                Transaction::Deposit {
                     account_id,
                     transaction_id: _,
                     amount,
@@ -217,7 +217,7 @@ mod producer {
 
     use crate::engine::PaymentsEngineMessage;
     use crate::types::{AccountId, TxId};
-    use crate::{TransactionEvent, DECIMAL_MAX_PRECISION};
+    use crate::{Transaction, DECIMAL_MAX_PRECISION};
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "lowercase")]
@@ -239,10 +239,10 @@ mod producer {
         amount: Option<Decimal>,
     }
 
-    impl TryInto<TransactionEvent> for TransactionRecord {
+    impl TryInto<Transaction> for TransactionRecord {
         type Error = anyhow::Error;
 
-        fn try_into(self) -> std::result::Result<TransactionEvent, Self::Error> {
+        fn try_into(self) -> std::result::Result<Transaction, Self::Error> {
             match self.type_ {
                 TransactionRecordType::Deposit => {
                     let amount = self
@@ -255,7 +255,7 @@ mod producer {
                             amount.scale()
                         ));
                     }
-                    Ok(TransactionEvent::Deposit {
+                    Ok(Transaction::Deposit {
                         account_id: self.client,
                         transaction_id: self.tx,
                         amount,
@@ -266,12 +266,12 @@ mod producer {
         }
     }
 
-    pub struct CSVTransactionEventProducer {
+    pub struct CSVTransactionProducer {
         csv_path: PathBuf,
         payment_engine_sender: mpsc::Sender<PaymentsEngineMessage>,
     }
 
-    impl CSVTransactionEventProducer {
+    impl CSVTransactionProducer {
         pub fn new(
             csv_path: &str,
             payment_engine_sender: mpsc::Sender<PaymentsEngineMessage>,
@@ -283,7 +283,7 @@ mod producer {
         }
     }
 
-    pub async fn run_producer(p: CSVTransactionEventProducer) -> Result<()> {
+    pub async fn run_producer(p: CSVTransactionProducer) -> Result<()> {
         let f = File::open(p.csv_path)?;
         let mut rdr = csv::ReaderBuilder::new()
             .trim(csv::Trim::All)
@@ -294,7 +294,7 @@ mod producer {
         while rdr.read_byte_record(&mut record)? {
             let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
             p.payment_engine_sender
-                .send(PaymentsEngineMessage::ProcessTxEvent(tx_record.try_into()?))
+                .send(PaymentsEngineMessage::ProcessTx(tx_record.try_into()?))
                 .await?;
         }
 
@@ -310,7 +310,7 @@ async fn main() -> Result<()> {
     let engine = PaymentsEngine::new(engine_receiver);
     let engine_join = tokio::spawn(run_engine(engine));
 
-    let producer = CSVTransactionEventProducer::new(csv_path, engine_sender);
+    let producer = CSVTransactionProducer::new(csv_path, engine_sender);
     run_producer(producer).await?;
 
     engine_join.await?
