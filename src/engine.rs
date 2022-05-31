@@ -3,8 +3,11 @@ use std::collections::HashMap;
 use crate::error::PaymentsEngineError::WorkerAccountIdMismatch;
 use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
-use crate::types::{Account, AccountId, Handle, Transaction};
+use crate::payments::{Account, AccountId, Transaction};
+
+pub type Handle<T> = JoinHandle<Result<T>>;
 
 #[derive(Debug)]
 pub enum PaymentsEngineMessage {
