@@ -1,3 +1,5 @@
+mod engine;
+
 use anyhow::Result;
 use tokio::sync::mpsc;
 
@@ -8,9 +10,10 @@ use crate::types::Transaction;
 const DECIMAL_MAX_PRECISION: u32 = 4;
 
 mod types {
-    use anyhow::Result;
+    use anyhow;
     use rust_decimal::Decimal;
     use tokio::task::JoinHandle;
+    use crate::error::TransactionError;
 
     pub type AccountId = u16;
     /// A transaction id.
@@ -40,8 +43,12 @@ mod types {
             self.id
         }
 
-        pub fn add_funds(&mut self, amount: Decimal) {
-            self.funds.total += amount;
+        pub fn deposit_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+            if amount < Decimal::ZERO {
+                return Err(TransactionError::InvalidAmount("amount cannot be negative"));
+            }
+            self.funds.total = self.funds.total.checked_add(amount).ok_or(TransactionError::TooMuchMoney(self.id))?;
+            Ok(())
         }
     }
 
@@ -62,146 +69,58 @@ mod types {
         }
     }
 
-    pub type Handle<T> = JoinHandle<Result<T>>;
+    pub type Handle<T> = JoinHandle<anyhow::Result<T>>;
+
+    #[cfg(test)]
+    mod tests {
+        use rust_decimal_macros::dec;
+        use crate::error::TransactionError::{InvalidAmount, TooMuchMoney};
+        use super::*;
+
+        #[test]
+        fn test_account_add_funds_success() {
+            let mut acc = Account::new(0);
+            acc.deposit_funds(dec!(1.23));
+            assert_eq!(acc.funds.total, dec!(1.23));
+            acc.deposit_funds(dec!(1.23));
+            assert_eq!(acc.funds.total, dec!(2.46));
+        }
+
+        #[test]
+        fn test_account_add_negative_funds() {
+            let mut acc = Account::new(0);
+            let result = acc.deposit_funds(dec!(-1));
+            let expected = Err(InvalidAmount("amount cannot be negative"));
+            assert_eq!(expected, result);
+        }
+
+        #[test]
+        fn test_account_add_funds_overflow() -> Result<(), TransactionError> {
+            let mut acc = Account::new(0);
+            let expected_funds = Decimal::MAX - dec!(10);
+            acc.deposit_funds(expected_funds)?;
+
+            let expected_error = Err(TooMuchMoney(0));
+            let result = acc.deposit_funds(dec!(15));
+            assert_eq!(expected_error, result);
+            assert_eq!(expected_funds, acc.funds.total);
+            Ok(())
+        }
+    }
 }
 
-mod engine {
-    use std::collections::HashMap;
+mod error {
+    use crate::types::AccountId;
+    use thiserror::Error;
 
-    use anyhow::Result;
-    use tokio::sync::mpsc;
+    /// Error that may happen during transaction processing.
+    #[derive(Debug, Clone, Error, PartialEq)]
+    pub enum TransactionError {
+        #[error("Account {0} has too much money")]
+        TooMuchMoney(AccountId),
 
-    use crate::types::{Account, AccountId, Handle, Transaction};
-
-    #[derive(Debug)]
-    pub enum PaymentsEngineMessage {
-        ProcessTx(Transaction),
-    }
-
-    pub struct PaymentsEngine {
-        receiver: mpsc::Receiver<PaymentsEngineMessage>,
-        account_workers: HashMap<AccountId, mpsc::Sender<WorkerMessage>>,
-        worker_joins: Vec<(AccountId, Handle<()>)>,
-    }
-
-    impl PaymentsEngine {
-        pub fn new(receiver: mpsc::Receiver<PaymentsEngineMessage>) -> Self {
-            Self {
-                receiver,
-                account_workers: HashMap::new(),
-                worker_joins: Vec::new(),
-            }
-        }
-
-        pub async fn handle_message(&mut self, msg: PaymentsEngineMessage) -> Result<()> {
-            match msg {
-                PaymentsEngineMessage::ProcessTx(tx) => self.process_transaction(tx),
-            }
-            .await
-        }
-
-        pub async fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
-            println!("Engine: got tx {:?}", tx);
-            match self.account_workers.get(&tx.account_id()) {
-                Some(s) => s.send(WorkerMessage::ProcessTx(tx)).await?,
-                None => {
-                    let account_id = tx.account_id();
-                    let (sender, receiver) = mpsc::channel(64);
-                    let worker = AccountWorker::new(receiver, Account::new(account_id));
-                    let join = tokio::spawn(run_worker(worker));
-                    sender.send(WorkerMessage::ProcessTx(tx)).await?;
-                    self.account_workers.insert(account_id, sender);
-                    self.worker_joins.push((account_id, join));
-                }
-            };
-            Ok(())
-        }
-
-        async fn shutdown(&mut self) {
-            // Drop worker senders to allow workers to terminate
-            self.drop_worker_senders();
-            // Wait until all workers terminate gracefully
-            while let Some((acc_id, join)) = self.worker_joins.pop() {
-                match join.await {
-                    Ok(result) => {
-                        if let Err(result_e) = result {
-                            eprintln!("worker {} tokio task failed: {}", acc_id, result_e);
-                        }
-                    }
-                    Err(e) => eprintln!("await worker {} failed: {}", acc_id, e),
-                };
-            }
-        }
-
-        fn drop_worker_senders(&mut self) {
-            self.account_workers = HashMap::new();
-        }
-    }
-
-    pub async fn run_engine(mut engine: PaymentsEngine) -> Result<()> {
-        while let Some(msg) = engine.receiver.recv().await {
-            engine.handle_message(msg).await?
-        }
-        engine.shutdown().await;
-        Ok(())
-    }
-
-    #[derive(Debug)]
-    enum WorkerMessage {
-        ProcessTx(Transaction),
-    }
-
-    struct AccountWorker {
-        receiver: mpsc::Receiver<WorkerMessage>,
-        account: Account,
-    }
-
-    impl AccountWorker {
-        pub fn new(receiver: mpsc::Receiver<WorkerMessage>, account: Account) -> Self {
-            Self { receiver, account }
-        }
-
-        pub fn id(&self) -> AccountId {
-            self.account.id()
-        }
-
-        fn handle_message(&mut self, msg: WorkerMessage) {
-            let result = match msg {
-                WorkerMessage::ProcessTx(tx) => self.process_transaction(tx),
-            };
-            if let Err(e) = result {
-                eprintln!(
-                    "worker {} failed to handle message {:?}: {}",
-                    self.id(),
-                    msg,
-                    e
-                );
-            };
-        }
-
-        fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
-            match tx {
-                Transaction::Deposit {
-                    account_id,
-                    transaction_id: _,
-                    amount,
-                } => {
-                    assert!(account_id == self.account.id());
-
-                    self.account.add_funds(amount);
-
-                    println!("Worker {} got tx {:?}", self.id(), tx);
-                }
-            };
-            Ok(())
-        }
-    }
-
-    async fn run_worker(mut worker: AccountWorker) -> Result<()> {
-        while let Some(msg) = worker.receiver.recv().await {
-            worker.handle_message(msg);
-        }
-        Ok(())
+        #[error("{0}")]
+        InvalidAmount(&'static str),
     }
 }
 

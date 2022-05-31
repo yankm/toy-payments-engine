@@ -8,6 +8,7 @@ anyhow = "1.0.57"
 csv = "1.1.6"
 rust_decimal = "1.23.1"
 serde = {version = "1.0.137", features = ["derive"] }
+thiserror = "1.0.31"
 tokio = {version = "1.18.2", features = ["macros", "rt-multi-thread", "sync", "fs"] }
 
 [dev-dependencies]
