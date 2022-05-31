@@ -289,9 +289,9 @@ mod producer {
             .trim(csv::Trim::All)
             .from_reader(f);
 
-        let headers = rdr.byte_headers()?.clone();
-        let mut record = csv::ByteRecord::new();
-        while rdr.read_byte_record(&mut record)? {
+        let headers = rdr.headers()?.clone();
+        let mut record = csv::StringRecord::new();
+        while rdr.read_record(&mut record)? {
             let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
             p.payment_engine_sender
                 .send(PaymentsEngineMessage::ProcessTx(tx_record.try_into()?))
