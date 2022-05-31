@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use crate::error::PaymentsEngineError::WorkerAccountIdMismatch;
+use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 
 use crate::types::{Account, AccountId, Handle, Transaction};
@@ -112,17 +113,29 @@ impl AccountWorker {
     }
 
     fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
+        println!("Worker {} got tx {:?}", self.id(), tx);
         match tx {
             Transaction::Deposit {
-                account_id,
-                transaction_id: _,
-                amount,
+                account_id, amount, ..
             } => {
-                assert!(account_id == self.account.id());
-
-                self.account.deposit_funds(amount);
-
-                println!("Worker {} got tx {:?}", self.id(), tx);
+                if account_id != self.account.id() {
+                    return Err(anyhow!(WorkerAccountIdMismatch(
+                        account_id,
+                        self.account.id()
+                    )));
+                }
+                self.account.deposit_funds(amount)?;
+            }
+            Transaction::Withdraw {
+                account_id, amount, ..
+            } => {
+                if account_id != self.account.id() {
+                    return Err(anyhow!(WorkerAccountIdMismatch(
+                        account_id,
+                        self.account.id()
+                    )));
+                }
+                self.account.withdraw_funds(amount)?;
             }
         };
         Ok(())
