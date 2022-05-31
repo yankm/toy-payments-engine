@@ -3,9 +3,9 @@ use tokio::sync::mpsc;
 
 use crate::engine::{run_engine, PaymentsEngine};
 use crate::producer::{run_producer, CSVTransactionEventProducer};
-use crate::types::{TransactionEvent, TxType};
+use crate::types::TransactionEvent;
 
-const DECIMAL_PRECISION: u32 = 4;
+const DECIMAL_MAX_PRECISION: u32 = 4;
 
 mod types {
     use anyhow::Result;
@@ -13,6 +13,7 @@ mod types {
     use tokio::task::JoinHandle;
 
     pub type AccountId = u16;
+    /// A transaction id.
     pub type TxId = u32;
 
     #[derive(Debug, Default)]
@@ -45,34 +46,18 @@ mod types {
     }
 
     #[derive(Debug, Clone, Copy)]
-    pub enum TxType {
-        Deposit,
-        Withdrawal,
-        Dispute,
-        Resolve,
-        Chargeback,
-    }
-
-    #[derive(Debug)]
-    pub struct TransactionEvent {
-        pub type_: TxType,
-        pub id: TxId,
-        pub account_id: AccountId,
-        pub amount: Option<Decimal>,
+    pub enum TransactionEvent {
+        Deposit {
+            account_id: AccountId,
+            transaction_id: TxId,
+            amount: Decimal,
+        },
     }
 
     impl TransactionEvent {
-        pub fn new(
-            type_: TxType,
-            id: TxId,
-            account_id: AccountId,
-            amount: Option<Decimal>,
-        ) -> Self {
-            Self {
-                type_,
-                id,
-                account_id,
-                amount,
+        pub fn account_id(&self) -> AccountId {
+            match *self {
+                Self::Deposit { account_id, .. } => account_id,
             }
         }
     }
@@ -87,7 +72,6 @@ mod engine {
     use tokio::sync::mpsc;
 
     use crate::types::{Account, AccountId, Handle, TransactionEvent};
-    use crate::TxType;
 
     #[derive(Debug)]
     pub enum PaymentsEngineMessage {
@@ -118,10 +102,10 @@ mod engine {
 
         pub async fn process_transaction_event(&mut self, tx: TransactionEvent) -> Result<()> {
             println!("Engine: got tx {:?}", tx);
-            match self.account_workers.get(&tx.account_id) {
+            match self.account_workers.get(&tx.account_id()) {
                 Some(s) => s.send(WorkerMessage::ProcessTxEvent(tx)).await?,
                 None => {
-                    let account_id = tx.account_id;
+                    let account_id = tx.account_id();
                     let (sender, receiver) = mpsc::channel(64);
                     let worker = AccountWorker::new(receiver, Account::new(account_id));
                     let join = tokio::spawn(run_worker(worker));
@@ -183,7 +167,7 @@ mod engine {
 
         fn handle_message(&mut self, msg: WorkerMessage) {
             let result = match msg {
-                WorkerMessage::ProcessTxEvent(ref tx) => self.process_transaction_event(tx),
+                WorkerMessage::ProcessTxEvent(tx) => self.process_transaction_event(tx),
             };
             if let Err(e) = result {
                 eprintln!(
@@ -195,15 +179,19 @@ mod engine {
             };
         }
 
-        fn process_transaction_event(&mut self, tx: &TransactionEvent) -> Result<()> {
-            match tx.type_ {
-                TxType::Deposit => {
-                    if let Some(amount) = tx.amount {
-                        self.account.add_funds(amount)
-                    }
+        fn process_transaction_event(&mut self, tx: TransactionEvent) -> Result<()> {
+            match tx {
+                TransactionEvent::Deposit {
+                    account_id,
+                    transaction_id: _,
+                    amount,
+                } => {
+                    assert!(account_id == self.account.id());
+
+                    self.account.add_funds(amount);
+
                     println!("Worker {} got tx {:?}", self.id(), tx);
                 }
-                _ => unimplemented!("process_transaction unimplemented"),
             };
             Ok(())
         }
@@ -218,15 +206,65 @@ mod engine {
 }
 
 mod producer {
+    use std::fs::File;
     use std::path::PathBuf;
 
     use anyhow::Result;
     use rust_decimal::Decimal;
+    use serde::Deserialize;
+
     use tokio::sync::mpsc;
 
     use crate::engine::PaymentsEngineMessage;
-    use crate::types::Handle;
-    use crate::{TransactionEvent, TxType};
+    use crate::types::{AccountId, TxId};
+    use crate::{TransactionEvent, DECIMAL_MAX_PRECISION};
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum TransactionRecordType {
+        Deposit,
+        Withdrawal,
+        Dispute,
+        Resolve,
+        Chargeback,
+    }
+
+    /// A CSV record representing a transaction.
+    #[derive(Debug, Deserialize)]
+    struct TransactionRecord {
+        #[serde(rename = "type")]
+        type_: TransactionRecordType,
+        client: AccountId,
+        tx: TxId,
+        amount: Option<Decimal>,
+    }
+
+    impl TryInto<TransactionEvent> for TransactionRecord {
+        type Error = anyhow::Error;
+
+        fn try_into(self) -> std::result::Result<TransactionEvent, Self::Error> {
+            match self.type_ {
+                TransactionRecordType::Deposit => {
+                    let amount = self
+                        .amount
+                        .ok_or_else(|| anyhow::anyhow!("amount should be present for deposits"))?;
+                    if amount.scale() > DECIMAL_MAX_PRECISION {
+                        return Err(anyhow::anyhow!(
+                            "expected precision <{}, got {}",
+                            DECIMAL_MAX_PRECISION,
+                            amount.scale()
+                        ));
+                    }
+                    Ok(TransactionEvent::Deposit {
+                        account_id: self.client,
+                        transaction_id: self.tx,
+                        amount,
+                    })
+                }
+                _ => unimplemented!("try_into unimplemented"),
+            }
+        }
+    }
 
     pub struct CSVTransactionEventProducer {
         csv_path: PathBuf,
@@ -246,17 +284,20 @@ mod producer {
     }
 
     pub async fn run_producer(p: CSVTransactionEventProducer) -> Result<()> {
-        for i in 0..10 {
-            let tx = TransactionEvent::new(
-                TxType::Deposit,
-                i.clone().into(),
-                i % 2,
-                Some(Decimal::new(12345, 4)),
-            );
+        let f = File::open(p.csv_path)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .from_reader(f);
+
+        let headers = rdr.byte_headers()?.clone();
+        let mut record = csv::ByteRecord::new();
+        while rdr.read_byte_record(&mut record)? {
+            let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
             p.payment_engine_sender
-                .send(PaymentsEngineMessage::ProcessTxEvent(tx))
+                .send(PaymentsEngineMessage::ProcessTxEvent(tx_record.try_into()?))
                 .await?;
         }
+
         Ok(())
     }
 }
