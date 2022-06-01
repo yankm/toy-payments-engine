@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 use crate::engine::{run_engine, PaymentsEngine};
-use crate::payments::Transaction;
+
 use crate::producer::{run_producer, CSVTransactionProducer};
 
 const DECIMAL_MAX_PRECISION: u32 = 4;
@@ -47,9 +47,9 @@ mod producer {
 
     use tokio::sync::mpsc;
 
-    use crate::engine::PaymentsEngineMessage;
+    use crate::engine::{PaymentsCommand, TxPayload};
     use crate::payments::{AccountId, TransactionId};
-    use crate::{Transaction, DECIMAL_MAX_PRECISION};
+    use crate::DECIMAL_MAX_PRECISION;
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "lowercase")]
@@ -71,21 +71,21 @@ mod producer {
         amount: Option<Decimal>,
     }
 
-    impl TryInto<Transaction> for TransactionRecord {
+    impl TryInto<PaymentsCommand> for TransactionRecord {
         type Error = anyhow::Error;
 
-        fn try_into(self) -> std::result::Result<Transaction, Self::Error> {
+        fn try_into(self) -> std::result::Result<PaymentsCommand, Self::Error> {
             match self.type_ {
-                TransactionRecordType::Deposit => Ok(Transaction::Deposit {
-                    account_id: self.client,
-                    tx_id: self.tx,
-                    amount: checked_amount(self.amount)?,
-                }),
-                TransactionRecordType::Withdrawal => Ok(Transaction::Withdraw {
-                    account_id: self.client,
-                    tx_id: self.tx,
-                    amount: checked_amount(self.amount)?,
-                }),
+                TransactionRecordType::Deposit => {
+                    let amount = checked_amount(self.amount)?;
+                    let payload = TxPayload::new(self.client, self.tx, amount);
+                    Ok(PaymentsCommand::DepositFunds(payload))
+                }
+                TransactionRecordType::Withdrawal => {
+                    let amount = checked_amount(self.amount)?;
+                    let payload = TxPayload::new(self.client, self.tx, amount);
+                    Ok(PaymentsCommand::WithdrawFunds(payload))
+                }
                 _ => unimplemented!("try_into unimplemented"),
             }
         }
@@ -107,14 +107,11 @@ mod producer {
 
     pub struct CSVTransactionProducer {
         csv_path: PathBuf,
-        payment_engine_sender: mpsc::Sender<PaymentsEngineMessage>,
+        payment_engine_sender: mpsc::Sender<PaymentsCommand>,
     }
 
     impl CSVTransactionProducer {
-        pub fn new(
-            csv_path: &str,
-            payment_engine_sender: mpsc::Sender<PaymentsEngineMessage>,
-        ) -> Self {
+        pub fn new(csv_path: &str, payment_engine_sender: mpsc::Sender<PaymentsCommand>) -> Self {
             Self {
                 csv_path: PathBuf::from(csv_path),
                 payment_engine_sender,
@@ -132,9 +129,7 @@ mod producer {
         let mut record = csv::StringRecord::new();
         while rdr.read_record(&mut record)? {
             let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
-            p.payment_engine_sender
-                .send(PaymentsEngineMessage::ProcessTx(tx_record.try_into()?))
-                .await?;
+            p.payment_engine_sender.send(tx_record.try_into()?).await?;
         }
 
         Ok(())

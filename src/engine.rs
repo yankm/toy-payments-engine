@@ -2,26 +2,60 @@ use std::collections::HashMap;
 
 use crate::error::PaymentsEngineError::WorkerAccountIdMismatch;
 use anyhow::{anyhow, Result};
+use rust_decimal::Decimal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::payments::{Account, AccountId, Transaction};
+use crate::payments::{Account, AccountId, TransactionId};
 
 pub type Handle<T> = JoinHandle<Result<T>>;
 
 #[derive(Debug)]
-pub enum PaymentsEngineMessage {
-    ProcessTx(Transaction),
+pub enum PaymentsCommand {
+    DepositFunds(TxPayload),
+    WithdrawFunds(TxPayload),
+}
+
+impl PaymentsCommand {
+    /// Account id of the message subject.
+    pub fn account_id(&self) -> AccountId {
+        match self {
+            Self::DepositFunds(p) => p.account_id(),
+            Self::WithdrawFunds(p) => p.account_id(),
+        }
+    }
+}
+
+/// A payload of the `PaymentsCommand` messages related to transactions.
+#[derive(Debug)]
+pub struct TxPayload {
+    account_id: AccountId,
+    tx_id: TransactionId,
+    amount: Decimal,
+}
+
+impl TxPayload {
+    pub fn new(account_id: AccountId, tx_id: TransactionId, amount: Decimal) -> Self {
+        Self {
+            account_id,
+            tx_id,
+            amount,
+        }
+    }
+
+    pub fn account_id(&self) -> AccountId {
+        self.account_id
+    }
 }
 
 pub struct PaymentsEngine {
-    receiver: mpsc::Receiver<PaymentsEngineMessage>,
-    account_workers: HashMap<AccountId, mpsc::Sender<WorkerMessage>>,
+    receiver: mpsc::Receiver<PaymentsCommand>,
+    account_workers: HashMap<AccountId, mpsc::Sender<PaymentsCommand>>,
     worker_joins: Vec<(AccountId, Handle<()>)>,
 }
 
 impl PaymentsEngine {
-    pub fn new(receiver: mpsc::Receiver<PaymentsEngineMessage>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<PaymentsCommand>) -> Self {
         Self {
             receiver,
             account_workers: HashMap::new(),
@@ -29,27 +63,32 @@ impl PaymentsEngine {
         }
     }
 
-    pub async fn handle_message(&mut self, msg: PaymentsEngineMessage) -> Result<()> {
-        match msg {
-            PaymentsEngineMessage::ProcessTx(tx) => self.process_transaction(tx),
+    /// Lazily spawns account workers and delegates commands to them.
+    pub async fn process_command(&mut self, cmd: PaymentsCommand) -> Result<()> {
+        println!("Engine: got command {:?}", cmd);
+
+        let account_id = cmd.account_id();
+        match self.account_workers.get(&account_id) {
+            Some(s) => s.send(cmd).await?,
+            None => self.spawn_worker_and_send(account_id, cmd).await?,
         }
-        .await
+
+        Ok(())
     }
 
-    pub async fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
-        println!("Engine: got tx {:?}", tx);
-        match self.account_workers.get(&tx.account_id()) {
-            Some(s) => s.send(WorkerMessage::ProcessTx(tx)).await?,
-            None => {
-                let account_id = tx.account_id();
-                let (sender, receiver) = mpsc::channel(64);
-                let worker = AccountWorker::new(receiver, Account::new(account_id));
-                let join = tokio::spawn(run_worker(worker));
-                sender.send(WorkerMessage::ProcessTx(tx)).await?;
-                self.account_workers.insert(account_id, sender);
-                self.worker_joins.push((account_id, join));
-            }
-        };
+    /// Spawns a new account worker and sends command to it.
+    async fn spawn_worker_and_send(
+        &mut self,
+        _account_id: AccountId,
+        cmd: PaymentsCommand,
+    ) -> Result<()> {
+        let account_id = cmd.account_id();
+        let (sender, receiver) = mpsc::channel(64);
+        let worker = AccountWorker::new(receiver, Account::new(account_id));
+        let join = tokio::spawn(run_worker(worker));
+        sender.send(cmd).await?;
+        self.account_workers.insert(account_id, sender);
+        self.worker_joins.push((account_id, join));
         Ok(())
     }
 
@@ -75,25 +114,20 @@ impl PaymentsEngine {
 }
 
 pub async fn run_engine(mut engine: PaymentsEngine) -> Result<()> {
-    while let Some(msg) = engine.receiver.recv().await {
-        engine.handle_message(msg).await?
+    while let Some(cmd) = engine.receiver.recv().await {
+        engine.process_command(cmd).await?
     }
     engine.shutdown().await;
     Ok(())
 }
 
-#[derive(Debug)]
-enum WorkerMessage {
-    ProcessTx(Transaction),
-}
-
 struct AccountWorker {
-    receiver: mpsc::Receiver<WorkerMessage>,
+    receiver: mpsc::Receiver<PaymentsCommand>,
     account: Account,
 }
 
 impl AccountWorker {
-    pub fn new(receiver: mpsc::Receiver<WorkerMessage>, account: Account) -> Self {
+    pub fn new(receiver: mpsc::Receiver<PaymentsCommand>, account: Account) -> Self {
         Self { receiver, account }
     }
 
@@ -101,53 +135,37 @@ impl AccountWorker {
         self.account.id()
     }
 
-    fn handle_message(&mut self, msg: WorkerMessage) {
-        let result = match msg {
-            WorkerMessage::ProcessTx(tx) => self.process_transaction(tx),
+    fn process_command(&mut self, cmd: PaymentsCommand) -> Result<()> {
+        println!("Worker {} got cmd {:?}", self.id(), cmd);
+
+        if cmd.account_id() != self.account.id() {
+            return Err(anyhow!(WorkerAccountIdMismatch(
+                cmd.account_id(),
+                self.account.id()
+            )));
+        }
+
+        let result = match cmd {
+            PaymentsCommand::DepositFunds(ref p) => self.account.deposit_funds(p.amount),
+            PaymentsCommand::WithdrawFunds(ref p) => self.account.withdraw_funds(p.amount),
         };
+
         if let Err(e) = result {
             eprintln!(
-                "worker {} failed to handle message {:?}: {}",
+                "worker {} failed to process message {:?}: {}",
                 self.id(),
-                msg,
+                cmd,
                 e
             );
         };
-    }
 
-    fn process_transaction(&mut self, tx: Transaction) -> Result<()> {
-        println!("Worker {} got tx {:?}", self.id(), tx);
-        match tx {
-            Transaction::Deposit {
-                account_id, amount, ..
-            } => {
-                if account_id != self.account.id() {
-                    return Err(anyhow!(WorkerAccountIdMismatch(
-                        account_id,
-                        self.account.id()
-                    )));
-                }
-                self.account.deposit_funds(amount)?;
-            }
-            Transaction::Withdraw {
-                account_id, amount, ..
-            } => {
-                if account_id != self.account.id() {
-                    return Err(anyhow!(WorkerAccountIdMismatch(
-                        account_id,
-                        self.account.id()
-                    )));
-                }
-                self.account.withdraw_funds(amount)?;
-            }
-        };
         Ok(())
     }
 }
 
 async fn run_worker(mut worker: AccountWorker) -> Result<()> {
-    while let Some(msg) = worker.receiver.recv().await {
-        worker.handle_message(msg);
+    while let Some(cmd) = worker.receiver.recv().await {
+        worker.process_command(cmd)?;
     }
     Ok(())
 }

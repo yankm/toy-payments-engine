@@ -3,9 +3,10 @@ use crate::error::TransactionError;
 use rust_decimal::Decimal;
 
 pub type AccountId = u16;
-
 pub type TransactionId = u32;
 
+/// Funds in a customer account. `total` is the total amount of money in account (including held funds)
+/// and `held` is the amount of money held due to disputes.
 #[derive(Debug, Default)]
 struct Funds {
     total: Decimal,
@@ -13,11 +14,13 @@ struct Funds {
 }
 
 impl Funds {
+    /// Returns funds currently available for withdrawal.
     pub fn available(&self) -> Decimal {
         self.total - self.held
     }
 }
 
+/// A customer account holding client funds.
 #[derive(Debug)]
 pub struct Account {
     id: AccountId,
@@ -41,6 +44,7 @@ impl Account {
         self.id
     }
 
+    /// Deposit funds to the account.
     pub fn deposit_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
         if amount <= Decimal::ZERO {
             return Err(TransactionError::NonPositiveAmount);
@@ -53,6 +57,7 @@ impl Account {
         Ok(())
     }
 
+    /// Withdraw funds from the account.
     pub fn withdraw_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
         if amount <= Decimal::ZERO {
             return Err(TransactionError::NonPositiveAmount);
@@ -62,29 +67,6 @@ impl Account {
         }
         self.funds.total -= amount;
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Transaction {
-    Deposit {
-        account_id: AccountId,
-        tx_id: TransactionId,
-        amount: Decimal,
-    },
-    Withdraw {
-        account_id: AccountId,
-        tx_id: TransactionId,
-        amount: Decimal,
-    },
-}
-
-impl Transaction {
-    pub fn account_id(&self) -> AccountId {
-        match *self {
-            Self::Deposit { account_id, .. } => account_id,
-            Self::Withdraw { account_id, .. } => account_id,
-        }
     }
 }
 
