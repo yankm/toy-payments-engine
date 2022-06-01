@@ -19,14 +19,14 @@ pub enum PaymentsCommand {
 }
 
 impl PaymentsCommand {
-    /// Account id of the message subject.
+    /// Account id of the command subject.
     pub fn account_id(&self) -> AccountId {
         match self {
             Self::DepositFunds(p) | Self::WithdrawFunds(p) => p.account_id(),
         }
     }
 
-    /// Transaction id from the message payload.
+    /// Transaction id from the command payload.
     pub fn transaction_id(&self) -> TransactionId {
         match self {
             Self::DepositFunds(p) | Self::WithdrawFunds(p) => p.tx_id(),
@@ -42,7 +42,7 @@ impl PaymentsCommand {
     }
 }
 
-/// A payload of the `PaymentsCommand` messages related to transactions.
+/// A payload of the `PaymentsCommand` commands related to transactions.
 #[derive(Debug, Clone)]
 pub struct TxPayload {
     account_id: AccountId,
@@ -192,7 +192,7 @@ impl AccountWorker {
 
         if let Err(e) = result {
             eprintln!(
-                "worker {} failed to process message {:?}: {}",
+                "worker {} failed to process command {:?}: {}",
                 self.id(),
                 cmd,
                 e
