@@ -23,7 +23,7 @@ mod types {
         Withdrawal,
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     pub enum TransactionStatus {
         /// Transaction has been created, but not have been processed.
         Created,
@@ -77,6 +77,7 @@ mod types {
 
     pub type DisputeId = Uuid;
 
+    #[derive(Debug, Clone)]
     pub enum DisputeStatus {
         /// Dispute has been created, but not started yet.
         Created,
@@ -89,19 +90,30 @@ mod types {
     }
 
     /// A customer's claim that a past transaction was erroneous and should be reversed.
+    #[derive(Debug, Clone)]
     pub struct Dispute {
         id: DisputeId,
+        account_id: AccountId,
         tx_id: TransactionId,
-        status: DisputeStatus,
+        pub status: DisputeStatus,
     }
 
     impl Dispute {
-        pub fn new(tx_id: TransactionId) -> Self {
+        pub fn new(account_id: AccountId, tx_id: TransactionId) -> Self {
             Self {
                 id: Uuid::new_v4(),
+                account_id,
                 tx_id,
                 status: DisputeStatus::Created,
             }
+        }
+
+        pub fn account_id(&self) -> AccountId {
+            self.account_id
+        }
+
+        pub fn tx_id(&self) -> TransactionId {
+            self.tx_id
         }
     }
 }
@@ -128,6 +140,12 @@ mod error {
 
         #[error("worker account id mismatch (got {0:?}, expected {1:?})")]
         WorkerAccountIdMismatch(AccountId, AccountId),
+
+        #[error("transaction {0} not found")]
+        TransactionNotFound(TransactionId),
+
+        #[error("cannot open dispute for transaction {0}: {1}")]
+        TransactionDisputeNotAllowed(TransactionId, &'static str),
     }
 }
 
@@ -143,7 +161,7 @@ mod producer {
 
     use crate::account::AccountId;
     use crate::engine::PaymentsCommand;
-    use crate::types::{Transaction, TransactionId, TransactionKind};
+    use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
     use crate::DECIMAL_MAX_PRECISION;
 
     #[derive(Debug, Deserialize)]
@@ -182,6 +200,10 @@ mod producer {
                     let tx =
                         Transaction::new(TransactionKind::Withdrawal, self.tx, self.client, amount);
                     Ok(PaymentsCommand::WithdrawFunds(tx))
+                }
+                TransactionRecordType::Dispute => {
+                    let d = Dispute::new(self.client, self.tx);
+                    Ok(PaymentsCommand::OpenDispute(d))
                 }
                 _ => unimplemented!("try_into unimplemented"),
             }

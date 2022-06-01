@@ -12,12 +12,13 @@ use crate::error::TransactionError;
 use worker::AccountWorker;
 
 use crate::error::TransactionError::DuplicatedTransaction;
-use crate::types::{Transaction, TransactionId};
+use crate::types::{Dispute, Transaction, TransactionId};
 
 #[derive(Debug)]
 pub enum PaymentsCommand {
     DepositFunds(Transaction),
     WithdrawFunds(Transaction),
+    OpenDispute(Dispute),
 }
 
 impl PaymentsCommand {
@@ -25,6 +26,7 @@ impl PaymentsCommand {
     pub fn account_id(&self) -> AccountId {
         match self {
             Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.account_id(),
+            Self::OpenDispute(d) => d.account_id(),
         }
     }
 
@@ -32,6 +34,7 @@ impl PaymentsCommand {
     pub fn transaction_id(&self) -> TransactionId {
         match self {
             Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.id(),
+            Self::OpenDispute(d) => d.tx_id(),
         }
     }
 
