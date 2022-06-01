@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::payments::{Account, AccountId, TransactionId};
+use crate::account::{Account, AccountId, TransactionId};
 
 pub type Handle<T> = JoinHandle<Result<T>>;
 

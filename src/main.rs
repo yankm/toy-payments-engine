@@ -1,5 +1,5 @@
 mod engine;
-mod payments;
+mod account;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -11,7 +11,7 @@ use crate::producer::{run_producer, CSVTransactionProducer};
 const DECIMAL_MAX_PRECISION: u32 = 4;
 
 mod error {
-    use crate::payments::AccountId;
+    use crate::account::AccountId;
     use thiserror::Error;
 
     /// Errors that may happen during transaction processing.
@@ -48,7 +48,7 @@ mod producer {
     use tokio::sync::mpsc;
 
     use crate::engine::{PaymentsCommand, TxPayload};
-    use crate::payments::{AccountId, TransactionId};
+    use crate::account::{AccountId, TransactionId};
     use crate::DECIMAL_MAX_PRECISION;
 
     #[derive(Debug, Deserialize)]
