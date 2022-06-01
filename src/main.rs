@@ -48,7 +48,7 @@ mod producer {
     use tokio::sync::mpsc;
 
     use crate::engine::PaymentsEngineMessage;
-    use crate::payments::{AccountId, TxId};
+    use crate::payments::{AccountId, TransactionId};
     use crate::{Transaction, DECIMAL_MAX_PRECISION};
 
     #[derive(Debug, Deserialize)]
@@ -67,7 +67,7 @@ mod producer {
         #[serde(rename = "type")]
         type_: TransactionRecordType,
         client: AccountId,
-        tx: TxId,
+        tx: TransactionId,
         amount: Option<Decimal>,
     }
 
@@ -78,12 +78,12 @@ mod producer {
             match self.type_ {
                 TransactionRecordType::Deposit => Ok(Transaction::Deposit {
                     account_id: self.client,
-                    transaction_id: self.tx,
+                    tx_id: self.tx,
                     amount: checked_amount(self.amount)?,
                 }),
                 TransactionRecordType::Withdrawal => Ok(Transaction::Withdraw {
                     account_id: self.client,
-                    transaction_id: self.tx,
+                    tx_id: self.tx,
                     amount: checked_amount(self.amount)?,
                 }),
                 _ => unimplemented!("try_into unimplemented"),

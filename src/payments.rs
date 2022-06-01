@@ -3,8 +3,8 @@ use crate::error::TransactionError;
 use rust_decimal::Decimal;
 
 pub type AccountId = u16;
-/// Transaction id.
-pub type TxId = u32;
+
+pub type TransactionId = u32;
 
 #[derive(Debug, Default)]
 struct Funds {
@@ -69,12 +69,12 @@ impl Account {
 pub enum Transaction {
     Deposit {
         account_id: AccountId,
-        transaction_id: TxId,
+        tx_id: TransactionId,
         amount: Decimal,
     },
     Withdraw {
         account_id: AccountId,
-        transaction_id: TxId,
+        tx_id: TransactionId,
         amount: Decimal,
     },
 }
