@@ -2,36 +2,36 @@ mod worker;
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{anyhow, Result};
-use rust_decimal::Decimal;
+use anyhow;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::account::{Account, AccountId, TransactionId};
+use crate::account::{Account, AccountId};
+use crate::error::TransactionError;
 use worker::AccountWorker;
 
 use crate::error::TransactionError::DuplicatedTransaction;
-
-pub type Handle<T> = JoinHandle<Result<T>>;
+use crate::types::{Transaction, TransactionId};
 
 #[derive(Debug)]
 pub enum PaymentsCommand {
-    DepositFunds(TxPayload),
-    WithdrawFunds(TxPayload),
+    DepositFunds(Transaction),
+    WithdrawFunds(Transaction),
 }
 
 impl PaymentsCommand {
     /// Account id of the command subject.
     pub fn account_id(&self) -> AccountId {
         match self {
-            Self::DepositFunds(p) | Self::WithdrawFunds(p) => p.account_id(),
+            Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.account_id(),
         }
     }
 
     /// Transaction id from the command payload.
     pub fn transaction_id(&self) -> TransactionId {
         match self {
-            Self::DepositFunds(p) | Self::WithdrawFunds(p) => p.tx_id(),
+            Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.id(),
         }
     }
 
@@ -44,38 +44,12 @@ impl PaymentsCommand {
     }
 }
 
-/// A payload of the `PaymentsCommand` commands related to transactions.
-#[derive(Debug, Clone)]
-pub struct TxPayload {
-    account_id: AccountId,
-    tx_id: TransactionId,
-    amount: Decimal,
-}
-
-impl TxPayload {
-    pub fn new(account_id: AccountId, tx_id: TransactionId, amount: Decimal) -> Self {
-        Self {
-            account_id,
-            tx_id,
-            amount,
-        }
-    }
-
-    pub fn account_id(&self) -> AccountId {
-        self.account_id
-    }
-
-    pub fn tx_id(&self) -> TransactionId {
-        self.tx_id
-    }
-}
-
 pub struct PaymentsEngine {
     receiver: mpsc::Receiver<PaymentsCommand>,
     /// Ledger containing sender-channels of account workers spawned.
     account_workers: HashMap<AccountId, mpsc::Sender<PaymentsCommand>>,
     /// Contains join handles of spawned workers, used for worker graceful shutdown.
-    worker_joins: Vec<(AccountId, Handle<()>)>,
+    worker_joins: Vec<(AccountId, JoinHandle<Result<(), TransactionError>>)>,
     /// Contains ids of processed deposit/withdraw transactions.
     processed_tx_ids: HashSet<TransactionId>,
 }
@@ -91,8 +65,8 @@ impl PaymentsEngine {
     }
 
     /// Lazily spawns account workers and delegates commands to them.
-    pub async fn process_command(&mut self, cmd: PaymentsCommand) -> Result<()> {
-        println!("Engine: got command {:?}", cmd);
+    pub async fn process_command(&mut self, cmd: PaymentsCommand) -> anyhow::Result<()> {
+        eprintln!("Engine: got command {:?}", cmd);
 
         let tx_id = cmd.transaction_id();
         let is_transaction = cmd.is_transaction();
@@ -101,7 +75,7 @@ impl PaymentsEngine {
         // as of 01.05.2022.
         if is_transaction {
             if self.processed_tx_ids.contains(&tx_id) {
-                return Err(anyhow!(DuplicatedTransaction(tx_id)));
+                return Err(anyhow::anyhow!(DuplicatedTransaction(tx_id)));
             }
         }
 
@@ -123,7 +97,7 @@ impl PaymentsEngine {
         &mut self,
         _account_id: AccountId,
         cmd: PaymentsCommand,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         let account_id = cmd.account_id();
         let (sender, receiver) = mpsc::channel(64);
         let worker = AccountWorker::new(receiver, Account::new(account_id));
@@ -155,7 +129,7 @@ impl PaymentsEngine {
     }
 }
 
-pub async fn run_engine(mut engine: PaymentsEngine) -> Result<()> {
+pub async fn run_engine(mut engine: PaymentsEngine) -> anyhow::Result<()> {
     while let Some(cmd) = engine.receiver.recv().await {
         engine.process_command(cmd).await?
     }
@@ -166,19 +140,22 @@ pub async fn run_engine(mut engine: PaymentsEngine) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::TransactionKind;
     use rust_decimal_macros::dec;
 
     #[tokio::test]
-    async fn test_engine_process_duplicate_transaction() -> Result<()> {
+    async fn test_engine_process_duplicate_transaction() -> anyhow::Result<()> {
         let (_, receiver) = mpsc::channel(2);
         let mut engine = PaymentsEngine::new(receiver);
 
-        let payload = TxPayload::new(0, 0, dec!(10));
+        let tx_id = 0;
+        let tx1 = Transaction::new(TransactionKind::Deposit, tx_id, 0, dec!(10));
         engine
-            .process_command(PaymentsCommand::DepositFunds(payload.clone()))
+            .process_command(PaymentsCommand::DepositFunds(tx1))
             .await?;
+        let tx2 = Transaction::new(TransactionKind::Withdrawal, tx_id, 0, dec!(10));
         let result = engine
-            .process_command(PaymentsCommand::WithdrawFunds(payload))
+            .process_command(PaymentsCommand::WithdrawFunds(tx2))
             .await;
         assert!(result.is_err());
         assert_eq!(

@@ -3,7 +3,6 @@ use crate::error::TransactionError;
 use rust_decimal::Decimal;
 
 pub type AccountId = u16;
-pub type TransactionId = u32;
 
 /// Funds in a customer account. `total` is the total amount of money in account (including held funds)
 /// and `held` is the amount of money held due to disputes.

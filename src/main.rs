@@ -10,12 +10,108 @@ use crate::producer::{run_producer, CSVTransactionProducer};
 
 const DECIMAL_MAX_PRECISION: u32 = 4;
 
+mod types {
+    use crate::account::AccountId;
+    use rust_decimal::Decimal;
+    use uuid::Uuid;
+
+    pub type TransactionId = u32;
+
+    #[derive(Debug, Clone)]
+    pub enum TransactionKind {
+        Deposit,
+        Withdrawal,
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum TransactionStatus {
+        /// Transaction has been created, but not have been processed.
+        Created,
+        /// Transaction has been processed and money has been moved in/out of account.
+        Processed,
+        /// Indicates there is a dispute ongoing related to this transaction. Depending on dispute
+        /// resolution, transaction goes either back to `Processed` or to `ChargedBack`.
+        DisputeInProgress,
+        /// Transaction has been charged back and money has been moved out of account.
+        ChargedBack,
+    }
+
+    /// A reversible action of moving funds in and out of customer account.
+    #[derive(Debug, Clone)]
+    pub struct Transaction {
+        kind: TransactionKind,
+        id: TransactionId,
+        account_id: AccountId,
+        amount: Decimal,
+        pub status: TransactionStatus,
+    }
+
+    impl Transaction {
+        pub fn new(
+            kind: TransactionKind,
+            id: TransactionId,
+            account_id: AccountId,
+            amount: Decimal,
+        ) -> Self {
+            Self {
+                kind,
+                id,
+                account_id,
+                amount,
+                status: TransactionStatus::Created,
+            }
+        }
+
+        pub fn id(&self) -> TransactionId {
+            self.id
+        }
+
+        pub fn account_id(&self) -> AccountId {
+            self.account_id
+        }
+
+        pub fn amount(&self) -> Decimal {
+            self.amount
+        }
+    }
+
+    pub type DisputeId = Uuid;
+
+    pub enum DisputeStatus {
+        /// Dispute has been created, but not started yet.
+        Created,
+        /// Dispute has been initiated and is currently in progress.
+        InProgress,
+        /// Dispute has been cancelled, related transaction **has not been reversed**.
+        Cancelled,
+        /// Dispute has been resolved, related transaction **has been reversed**.
+        Resolved,
+    }
+
+    /// A customer's claim that a past transaction was erroneous and should be reversed.
+    pub struct Dispute {
+        id: DisputeId,
+        tx_id: TransactionId,
+        status: DisputeStatus,
+    }
+
+    impl Dispute {
+        pub fn new(tx_id: TransactionId) -> Self {
+            Self {
+                id: Uuid::new_v4(),
+                tx_id,
+                status: DisputeStatus::Created,
+            }
+        }
+    }
+}
+
 mod error {
-    use crate::account::{AccountId, TransactionId};
+    use crate::account::AccountId;
+    use crate::types::TransactionId;
     use thiserror::Error;
 
     /// Errors that may happen during transaction processing.
-    /// They are safe to be exposed to users.
     #[derive(Debug, Clone, Error, PartialEq)]
     pub enum TransactionError {
         #[error("account has too much money")]
@@ -29,12 +125,7 @@ mod error {
 
         #[error("transaction {0} has already been processed")]
         DuplicatedTransaction(TransactionId),
-    }
 
-    /// Internal engine errors.
-    /// Not safe to be exposed.
-    #[derive(Debug, Clone, Error, PartialEq)]
-    pub enum PaymentsEngineError {
         #[error("worker account id mismatch (got {0:?}, expected {1:?})")]
         WorkerAccountIdMismatch(AccountId, AccountId),
     }
@@ -50,8 +141,9 @@ mod producer {
 
     use tokio::sync::mpsc;
 
-    use crate::account::{AccountId, TransactionId};
-    use crate::engine::{PaymentsCommand, TxPayload};
+    use crate::account::AccountId;
+    use crate::engine::PaymentsCommand;
+    use crate::types::{Transaction, TransactionId, TransactionKind};
     use crate::DECIMAL_MAX_PRECISION;
 
     #[derive(Debug, Deserialize)]
@@ -81,13 +173,15 @@ mod producer {
             match self.type_ {
                 TransactionRecordType::Deposit => {
                     let amount = checked_amount(self.amount)?;
-                    let payload = TxPayload::new(self.client, self.tx, amount);
-                    Ok(PaymentsCommand::DepositFunds(payload))
+                    let tx =
+                        Transaction::new(TransactionKind::Deposit, self.tx, self.client, amount);
+                    Ok(PaymentsCommand::DepositFunds(tx))
                 }
                 TransactionRecordType::Withdrawal => {
                     let amount = checked_amount(self.amount)?;
-                    let payload = TxPayload::new(self.client, self.tx, amount);
-                    Ok(PaymentsCommand::WithdrawFunds(payload))
+                    let tx =
+                        Transaction::new(TransactionKind::Withdrawal, self.tx, self.client, amount);
+                    Ok(PaymentsCommand::WithdrawFunds(tx))
                 }
                 _ => unimplemented!("try_into unimplemented"),
             }
