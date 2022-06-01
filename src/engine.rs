@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::PaymentsEngineError::WorkerAccountIdMismatch;
 use anyhow::{anyhow, Result};
@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::account::{Account, AccountId, TransactionId};
+
+use crate::error::TransactionError::DuplicatedTransaction;
 
 pub type Handle<T> = JoinHandle<Result<T>>;
 
@@ -20,14 +22,28 @@ impl PaymentsCommand {
     /// Account id of the message subject.
     pub fn account_id(&self) -> AccountId {
         match self {
-            Self::DepositFunds(p) => p.account_id(),
-            Self::WithdrawFunds(p) => p.account_id(),
+            Self::DepositFunds(p) | Self::WithdrawFunds(p) => p.account_id(),
+        }
+    }
+
+    /// Transaction id from the message payload.
+    pub fn transaction_id(&self) -> TransactionId {
+        match self {
+            Self::DepositFunds(p) | Self::WithdrawFunds(p) => p.tx_id(),
+        }
+    }
+
+    /// Returns `true` if command is a transaction, e.g. deposit/withdrawal.
+    pub fn is_transaction(&self) -> bool {
+        match self {
+            Self::DepositFunds(_) | Self::WithdrawFunds(_) => true,
+            _ => false,
         }
     }
 }
 
 /// A payload of the `PaymentsCommand` messages related to transactions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TxPayload {
     account_id: AccountId,
     tx_id: TransactionId,
@@ -46,12 +62,20 @@ impl TxPayload {
     pub fn account_id(&self) -> AccountId {
         self.account_id
     }
+
+    pub fn tx_id(&self) -> TransactionId {
+        self.tx_id
+    }
 }
 
 pub struct PaymentsEngine {
     receiver: mpsc::Receiver<PaymentsCommand>,
+    /// Ledger containing sender-channels of account workers spawned.
     account_workers: HashMap<AccountId, mpsc::Sender<PaymentsCommand>>,
+    /// Contains join handles of spawned workers, used for worker graceful shutdown.
     worker_joins: Vec<(AccountId, Handle<()>)>,
+    /// Contains ids of processed deposit/withdraw transactions.
+    processed_tx_ids: HashSet<TransactionId>,
 }
 
 impl PaymentsEngine {
@@ -60,6 +84,7 @@ impl PaymentsEngine {
             receiver,
             account_workers: HashMap::new(),
             worker_joins: Vec::new(),
+            processed_tx_ids: HashSet::new(),
         }
     }
 
@@ -67,10 +92,25 @@ impl PaymentsEngine {
     pub async fn process_command(&mut self, cmd: PaymentsCommand) -> Result<()> {
         println!("Engine: got command {:?}", cmd);
 
+        let tx_id = cmd.transaction_id();
+        let is_transaction = cmd.is_transaction();
+        // Avoid processing same transactions twice.
+        // Should avoid processing same disputes twice as well, but they don't have unique ids
+        // as of 01.05.2022.
+        if is_transaction {
+            if self.processed_tx_ids.contains(&tx_id) {
+                return Err(anyhow!(DuplicatedTransaction(tx_id)));
+            }
+        }
+
         let account_id = cmd.account_id();
         match self.account_workers.get(&account_id) {
             Some(s) => s.send(cmd).await?,
             None => self.spawn_worker_and_send(account_id, cmd).await?,
+        }
+
+        if is_transaction {
+            self.processed_tx_ids.insert(tx_id);
         }
 
         Ok(())
@@ -168,4 +208,31 @@ async fn run_worker(mut worker: AccountWorker) -> Result<()> {
         worker.process_command(cmd)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[tokio::test]
+    async fn test_engine_process_duplicate_transaction() -> Result<()> {
+        let (_, receiver) = mpsc::channel(2);
+        let mut engine = PaymentsEngine::new(receiver);
+
+        let payload = TxPayload::new(0, 0, dec!(10));
+        engine
+            .process_command(PaymentsCommand::DepositFunds(payload.clone()))
+            .await?;
+        let result = engine
+            .process_command(PaymentsCommand::WithdrawFunds(payload))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            format!("{}", result.err().unwrap()),
+            format!("{}", DuplicatedTransaction(0))
+        );
+
+        Ok(())
+    }
 }

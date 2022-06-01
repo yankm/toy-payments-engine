@@ -1,5 +1,5 @@
-mod engine;
 mod account;
+mod engine;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -11,7 +11,7 @@ use crate::producer::{run_producer, CSVTransactionProducer};
 const DECIMAL_MAX_PRECISION: u32 = 4;
 
 mod error {
-    use crate::account::AccountId;
+    use crate::account::{AccountId, TransactionId};
     use thiserror::Error;
 
     /// Errors that may happen during transaction processing.
@@ -26,6 +26,9 @@ mod error {
 
         #[error("insufficient funds")]
         InsufficientFunds,
+
+        #[error("transaction {0} has already been processed")]
+        DuplicatedTransaction(TransactionId),
     }
 
     /// Internal engine errors.
@@ -47,8 +50,8 @@ mod producer {
 
     use tokio::sync::mpsc;
 
-    use crate::engine::{PaymentsCommand, TxPayload};
     use crate::account::{AccountId, TransactionId};
+    use crate::engine::{PaymentsCommand, TxPayload};
     use crate::DECIMAL_MAX_PRECISION;
 
     #[derive(Debug, Deserialize)]

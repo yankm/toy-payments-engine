@@ -191,7 +191,13 @@ mod tests {
     #[test]
     fn test_account_hold_funds_success() -> Result<(), TransactionError> {
         let total = dec!(10.10);
-        let mut acc = Account::new_with_funds(0, Funds {total, held: dec!(0)});
+        let mut acc = Account::new_with_funds(
+            0,
+            Funds {
+                total,
+                held: dec!(0),
+            },
+        );
         acc.hold_funds(dec!(1.05))?;
         assert_eq!(acc.funds.total, total);
         assert_eq!(acc.funds.available(), dec!(9.05));
@@ -222,7 +228,7 @@ mod tests {
             (dec!(5), dec!(3), dec!(3)),
         ];
         for (total, held, hold_amount) in tests {
-            let mut acc = Account::new_with_funds(0, Funds {total, held});
+            let mut acc = Account::new_with_funds(0, Funds { total, held });
             let result = acc.hold_funds(hold_amount);
             assert_eq!(result, Err(InsufficientFunds));
             assert_eq!(acc.funds.held, held);
@@ -232,7 +238,7 @@ mod tests {
     #[test]
     fn test_account_unhold_funds_success() -> Result<(), TransactionError> {
         let total = dec!(10.10);
-        let mut acc = Account::new_with_funds(0, Funds {total, held: total});
+        let mut acc = Account::new_with_funds(0, Funds { total, held: total });
         acc.unhold_funds(dec!(1.05))?;
         assert_eq!(acc.funds.held, total - dec!(1.05));
         assert_eq!(acc.funds.available(), dec!(1.05));
@@ -246,7 +252,7 @@ mod tests {
     fn test_account_unhold_non_positive_funds() {
         let amounts = [dec!(-1), dec!(-0.1), dec!(0)];
         let held = dec!(10);
-        let mut acc = Account::new_with_funds(0, Funds {total: held, held});
+        let mut acc = Account::new_with_funds(0, Funds { total: held, held });
         for amount in amounts {
             let result = acc.unhold_funds(amount);
             let expected = Err(NonPositiveAmount);
@@ -264,7 +270,7 @@ mod tests {
         ];
 
         for (total, held, unhold_amount) in tests {
-            let mut acc = Account::new_with_funds(0, Funds {total, held});
+            let mut acc = Account::new_with_funds(0, Funds { total, held });
 
             let result = acc.unhold_funds(unhold_amount);
             assert_eq!(result, Err(InsufficientFunds));
