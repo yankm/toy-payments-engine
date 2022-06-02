@@ -12,57 +12,71 @@ use crate::error::TransactionError;
 use worker::AccountWorker;
 
 use crate::error::TransactionError::DuplicatedTransaction;
-use crate::types::{Dispute, Transaction, TransactionId};
+use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 
+/// Represents commands payment engine can process.
 #[derive(Debug)]
-pub enum PaymentsCommand {
-    DepositFunds(Transaction),
-    WithdrawFunds(Transaction),
-    OpenDispute(Dispute),
-    CancelDispute(Dispute),
-    ChargebackDispute(Dispute),
+pub enum PaymentsEngineCommand {
+    TransactionCommand(TxCmd),
+    DisputeCommand(DisputeCmd),
+    PrintOutput,
 }
 
-impl PaymentsCommand {
-    /// Account id of the command subject.
-    pub fn account_id(&self) -> AccountId {
-        match self {
-            Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.account_id(),
-            Self::OpenDispute(d) | Self::CancelDispute(d) | Self::ChargebackDispute(d) => {
-                d.account_id()
-            }
-        }
-    }
+#[derive(Debug)]
+pub enum TxCmdAction {
+    Deposit,
+    Withdraw,
+}
 
-    /// Transaction id from the command payload.
-    pub fn transaction_id(&self) -> TransactionId {
-        match self {
-            Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.id(),
-            Self::OpenDispute(d) | Self::CancelDispute(d) | Self::ChargebackDispute(d) => d.tx_id(),
-        }
-    }
+/// Represents transaction-related commands.
+#[derive(Debug)]
+pub struct TxCmd {
+    action: TxCmdAction,
+    tx: Transaction,
+}
 
-    /// Returns `true` if command is a transaction, e.g. deposit/withdrawal.
-    pub fn is_transaction(&self) -> bool {
-        match self {
-            Self::DepositFunds(_) | Self::WithdrawFunds(_) => true,
-            _ => false,
-        }
+impl From<Transaction> for TxCmd {
+    fn from(tx: Transaction) -> Self {
+        let action = match tx.kind() {
+            TransactionKind::Deposit => TxCmdAction::Deposit,
+            TransactionKind::Withdrawal => TxCmdAction::Withdraw,
+        };
+        Self { action, tx }
+    }
+}
+
+#[derive(Debug)]
+pub enum DisputeCmdAction {
+    OpenDispute,
+    CancelDispute,
+    ChargebackDispute,
+}
+
+/// Represents dispute-related commands.
+#[derive(Debug)]
+pub struct DisputeCmd {
+    action: DisputeCmdAction,
+    dispute: Dispute,
+}
+
+impl DisputeCmd {
+    pub fn new(action: DisputeCmdAction, dispute: Dispute) -> Self {
+        Self { action, dispute }
     }
 }
 
 pub struct PaymentsEngine {
-    receiver: mpsc::Receiver<PaymentsCommand>,
+    receiver: mpsc::Receiver<PaymentsEngineCommand>,
     /// Ledger containing sender-channels of account workers spawned.
-    account_workers: HashMap<AccountId, mpsc::Sender<PaymentsCommand>>,
+    account_workers: HashMap<AccountId, mpsc::Sender<PaymentsEngineCommand>>,
     /// Contains join handles of spawned workers, used for worker graceful shutdown.
     worker_joins: Vec<(AccountId, JoinHandle<Result<(), TransactionError>>)>,
-    /// Contains ids of processed deposit/withdraw transactions.
+    /// Contains ids of processed transactions.
     processed_tx_ids: HashSet<TransactionId>,
 }
 
 impl PaymentsEngine {
-    pub fn new(receiver: mpsc::Receiver<PaymentsCommand>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<PaymentsEngineCommand>) -> Self {
         Self {
             receiver,
             account_workers: HashMap::new(),
@@ -72,40 +86,58 @@ impl PaymentsEngine {
     }
 
     /// Lazily spawns account workers and delegates commands to them.
-    pub async fn process_command(&mut self, cmd: PaymentsCommand) -> anyhow::Result<()> {
+    pub async fn process_command(&mut self, cmd: PaymentsEngineCommand) -> anyhow::Result<()> {
         eprintln!("Engine: got command {:?}", cmd);
 
-        let tx_id = cmd.transaction_id();
-        let is_transaction = cmd.is_transaction();
+        match cmd {
+            PaymentsEngineCommand::TransactionCommand(tx) => self.process_transaction(tx).await,
+            PaymentsEngineCommand::DisputeCommand(d) => self.process_dispute(d).await,
+            PaymentsEngineCommand::PrintOutput => self.process_print_output().await,
+        }?;
+
+        Ok(())
+    }
+
+    async fn process_transaction(&mut self, cmd: TxCmd) -> anyhow::Result<()> {
+        let tx_id = cmd.tx.id();
+
         // Avoid processing same transactions twice.
-        // Should avoid processing same disputes twice as well, but they don't have unique ids
-        // as of 01.05.2022.
-        if is_transaction {
-            if self.processed_tx_ids.contains(&tx_id) {
-                return Err(anyhow::anyhow!(DuplicatedTransaction(tx_id)));
-            }
+        if self.processed_tx_ids.contains(&tx_id) {
+            return Err(anyhow::anyhow!(DuplicatedTransaction(tx_id)));
         }
 
-        let account_id = cmd.account_id();
+        let account_id = cmd.tx.account_id();
+        let send_cmd = PaymentsEngineCommand::TransactionCommand(cmd);
         match self.account_workers.get(&account_id) {
-            Some(s) => s.send(cmd).await?,
-            None => self.spawn_worker_and_send(account_id, cmd).await?,
+            Some(s) => s.send(send_cmd).await?,
+            None => self.spawn_worker_and_send(account_id, send_cmd).await?,
         }
 
-        if is_transaction {
-            self.processed_tx_ids.insert(tx_id);
-        }
+        self.processed_tx_ids.insert(tx_id);
 
+        Ok(())
+    }
+
+    async fn process_dispute(&mut self, cmd: DisputeCmd) -> anyhow::Result<()> {
+        let account_id = cmd.dispute.account_id();
+        let send_cmd = PaymentsEngineCommand::DisputeCommand(cmd);
+        match self.account_workers.get(&account_id) {
+            Some(s) => s.send(send_cmd).await?,
+            None => self.spawn_worker_and_send(account_id, send_cmd).await?,
+        }
+        Ok(())
+    }
+
+    async fn process_print_output(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
     /// Spawns a new account worker and sends command to it.
     async fn spawn_worker_and_send(
         &mut self,
-        _account_id: AccountId,
-        cmd: PaymentsCommand,
+        account_id: AccountId,
+        cmd: PaymentsEngineCommand,
     ) -> anyhow::Result<()> {
-        let account_id = cmd.account_id();
         let (sender, receiver) = mpsc::channel(64);
         let worker = AccountWorker::new(receiver, Account::new(account_id));
         let join = tokio::spawn(worker::run(worker));
@@ -158,11 +190,11 @@ mod tests {
         let tx_id = 0;
         let tx1 = Transaction::new(TransactionKind::Deposit, tx_id, 0, dec!(10));
         engine
-            .process_command(PaymentsCommand::DepositFunds(tx1))
+            .process_command(PaymentsEngineCommand::TransactionCommand(tx1.into()))
             .await?;
         let tx2 = Transaction::new(TransactionKind::Withdrawal, tx_id, 0, dec!(10));
         let result = engine
-            .process_command(PaymentsCommand::WithdrawFunds(tx2))
+            .process_command(PaymentsEngineCommand::TransactionCommand(tx2.into()))
             .await;
         assert!(result.is_err());
         assert_eq!(

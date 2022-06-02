@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
-use super::PaymentsCommand;
 use crate::account::{Account, AccountId};
+use crate::engine::{DisputeCmdAction, PaymentsEngineCommand, TxCmdAction};
 use crate::error::TransactionError;
 use crate::error::TransactionError::{
     DisputeNotSupported, TransactionDisputeNotFound, TransactionNotFound, WorkerAccountIdMismatch,
@@ -15,14 +15,14 @@ use crate::types::{
 
 /// A stateful worker capable of processing transactions and disputes for a single account.
 pub struct AccountWorker {
-    receiver: mpsc::Receiver<PaymentsCommand>,
+    receiver: mpsc::Receiver<PaymentsEngineCommand>,
     account: Account,
     transactions: HashMap<TransactionId, Transaction>,
     disputes: HashMap<TransactionId, Dispute>,
 }
 
 impl AccountWorker {
-    pub fn new(receiver: mpsc::Receiver<PaymentsCommand>, account: Account) -> Self {
+    pub fn new(receiver: mpsc::Receiver<PaymentsEngineCommand>, account: Account) -> Self {
         Self {
             receiver,
             account,
@@ -35,25 +35,43 @@ impl AccountWorker {
         self.account.id()
     }
 
-    pub fn process_command(&mut self, cmd: PaymentsCommand) -> Result<(), TransactionError> {
+    pub fn process_command(&mut self, cmd: PaymentsEngineCommand) -> Result<(), TransactionError> {
         eprintln!("Worker {} got cmd {:?}", self.id(), cmd);
 
-        if cmd.account_id() != self.account.id() {
-            return Err(WorkerAccountIdMismatch(cmd.account_id(), self.account.id()));
-        }
-
         let result = match cmd {
-            PaymentsCommand::DepositFunds(ref t) => self.process_deposit(t),
-            PaymentsCommand::WithdrawFunds(ref t) => self.process_withdrawal(t),
-            PaymentsCommand::OpenDispute(ref d) => self.process_open_dispute(d),
-            PaymentsCommand::CancelDispute(ref d) => {
-                self.process_resolve_dispute(d, DisputeResolution::Cancelled)
+            PaymentsEngineCommand::TransactionCommand(ref t_cmd) => {
+                if t_cmd.tx.account_id() != self.account.id() {
+                    return Err(WorkerAccountIdMismatch(
+                        t_cmd.tx.account_id(),
+                        self.account.id(),
+                    ));
+                };
+                match t_cmd.action {
+                    TxCmdAction::Deposit => self.process_deposit(&t_cmd.tx),
+                    TxCmdAction::Withdraw => self.process_withdrawal(&t_cmd.tx),
+                }
             }
-            PaymentsCommand::ChargebackDispute(ref d) => {
-                self.process_resolve_dispute(d, DisputeResolution::ChargedBack)
+            PaymentsEngineCommand::DisputeCommand(ref d_cmd) => {
+                if d_cmd.dispute.account_id() != self.account.id() {
+                    return Err(WorkerAccountIdMismatch(
+                        d_cmd.dispute.account_id(),
+                        self.account.id(),
+                    ));
+                };
+                match d_cmd.action {
+                    DisputeCmdAction::OpenDispute => self.process_open_dispute(&d_cmd.dispute),
+                    DisputeCmdAction::CancelDispute => {
+                        self.process_resolve_dispute(&d_cmd.dispute, DisputeResolution::Cancelled)
+                    }
+                    DisputeCmdAction::ChargebackDispute => {
+                        self.process_resolve_dispute(&d_cmd.dispute, DisputeResolution::ChargedBack)
+                    }
+                }
             }
+            PaymentsEngineCommand::PrintOutput => todo!(),
         };
 
+        // Do not abort worker on command processing errors
         if let Err(e) = result {
             eprintln!(
                 "worker {} failed to process command {:?}: {}",

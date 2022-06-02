@@ -189,7 +189,7 @@ mod producer {
     use tokio::sync::mpsc;
 
     use crate::account::AccountId;
-    use crate::engine::PaymentsCommand;
+    use crate::engine::{DisputeCmd, DisputeCmdAction, PaymentsEngineCommand};
     use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
     use crate::DECIMAL_MAX_PRECISION;
 
@@ -213,34 +213,37 @@ mod producer {
         amount: Option<Decimal>,
     }
 
-    impl TryInto<PaymentsCommand> for TransactionRecord {
+    impl TryInto<PaymentsEngineCommand> for TransactionRecord {
         type Error = anyhow::Error;
 
-        fn try_into(self) -> std::result::Result<PaymentsCommand, Self::Error> {
+        fn try_into(self) -> std::result::Result<PaymentsEngineCommand, Self::Error> {
             match self.type_ {
                 TransactionRecordType::Deposit => {
                     let amount = checked_amount(self.amount)?;
                     let tx =
                         Transaction::new(TransactionKind::Deposit, self.tx, self.client, amount);
-                    Ok(PaymentsCommand::DepositFunds(tx))
+                    Ok(PaymentsEngineCommand::TransactionCommand(tx.into()))
                 }
                 TransactionRecordType::Withdrawal => {
                     let amount = checked_amount(self.amount)?;
                     let tx =
                         Transaction::new(TransactionKind::Withdrawal, self.tx, self.client, amount);
-                    Ok(PaymentsCommand::WithdrawFunds(tx))
+                    Ok(PaymentsEngineCommand::TransactionCommand(tx.into()))
                 }
                 TransactionRecordType::Dispute => {
                     let d = Dispute::new(self.client, self.tx);
-                    Ok(PaymentsCommand::OpenDispute(d))
+                    let cmd = DisputeCmd::new(DisputeCmdAction::OpenDispute, d);
+                    Ok(PaymentsEngineCommand::DisputeCommand(cmd))
                 }
                 TransactionRecordType::Resolve => {
                     let d = Dispute::new(self.client, self.tx);
-                    Ok(PaymentsCommand::CancelDispute(d))
+                    let cmd = DisputeCmd::new(DisputeCmdAction::CancelDispute, d);
+                    Ok(PaymentsEngineCommand::DisputeCommand(cmd))
                 }
                 TransactionRecordType::Chargeback => {
                     let d = Dispute::new(self.client, self.tx);
-                    Ok(PaymentsCommand::ChargebackDispute(d))
+                    let cmd = DisputeCmd::new(DisputeCmdAction::ChargebackDispute, d);
+                    Ok(PaymentsEngineCommand::DisputeCommand(cmd))
                 }
             }
         }
@@ -262,11 +265,14 @@ mod producer {
 
     pub struct CSVTransactionProducer {
         csv_path: PathBuf,
-        payment_engine_sender: mpsc::Sender<PaymentsCommand>,
+        payment_engine_sender: mpsc::Sender<PaymentsEngineCommand>,
     }
 
     impl CSVTransactionProducer {
-        pub fn new(csv_path: &str, payment_engine_sender: mpsc::Sender<PaymentsCommand>) -> Self {
+        pub fn new(
+            csv_path: &str,
+            payment_engine_sender: mpsc::Sender<PaymentsEngineCommand>,
+        ) -> Self {
             Self {
                 csv_path: PathBuf::from(csv_path),
                 payment_engine_sender,
