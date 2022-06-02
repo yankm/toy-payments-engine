@@ -87,7 +87,7 @@ impl PaymentsEngine {
 
     /// Lazily spawns account workers and delegates commands to them.
     pub async fn process_command(&mut self, cmd: PaymentsEngineCommand) -> anyhow::Result<()> {
-        eprintln!("Engine: got command {:?}", cmd);
+        log::debug!("Engine: got command {:?}", cmd);
 
         match cmd {
             PaymentsEngineCommand::TransactionCommand(tx) => self.process_transaction(tx).await,
@@ -162,10 +162,10 @@ impl PaymentsEngine {
             match join.await {
                 Ok(result) => {
                     if let Err(result_e) = result {
-                        eprintln!("worker {} tokio task failed: {}", acc_id, result_e);
+                        log::error!("worker {} tokio task failed: {}", acc_id, result_e);
                     }
                 }
-                Err(e) => eprintln!("await worker {} failed: {}", acc_id, e),
+                Err(e) => log::error!("await worker {} failed: {}", acc_id, e),
             };
         }
     }

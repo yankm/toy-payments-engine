@@ -36,7 +36,7 @@ impl AccountWorker {
     }
 
     pub fn process_command(&mut self, cmd: PaymentsEngineCommand) -> Result<(), TransactionError> {
-        eprintln!("Worker {} got cmd {:?}", self.id(), cmd);
+        log::debug!("Worker {} got cmd {:?}", self.id(), cmd);
 
         let result = match cmd {
             PaymentsEngineCommand::TransactionCommand(ref t_cmd) => {
@@ -73,7 +73,7 @@ impl AccountWorker {
 
         // Do not abort worker on command processing errors
         if let Err(e) = result {
-            eprintln!(
+            log::error!(
                 "worker {} failed to process command {:?}: {}",
                 self.id(),
                 cmd,
