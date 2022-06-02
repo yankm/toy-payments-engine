@@ -24,6 +24,7 @@ impl Funds {
 pub struct Account {
     id: AccountId,
     funds: Funds,
+    pub is_locked: bool,
 }
 
 impl Account {
@@ -31,12 +32,17 @@ impl Account {
         Self {
             id,
             funds: Funds::default(),
+            is_locked: false,
         }
     }
 
     #[cfg(test)]
     fn new_with_funds(id: AccountId, funds: Funds) -> Self {
-        Self { id, funds }
+        Self {
+            id,
+            funds,
+            is_locked: false,
+        }
     }
 
     pub fn id(&self) -> AccountId {
@@ -45,6 +51,8 @@ impl Account {
 
     /// Deposit funds to the account.
     pub fn deposit_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+        self.check_locked()?;
+
         if amount <= Decimal::ZERO {
             return Err(TransactionError::NonPositiveAmount);
         }
@@ -58,6 +66,8 @@ impl Account {
 
     /// Withdraw funds from the account.
     pub fn withdraw_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+        self.check_locked()?;
+
         if amount <= Decimal::ZERO {
             return Err(TransactionError::NonPositiveAmount);
         }
@@ -70,6 +80,8 @@ impl Account {
 
     /// Hold account funds, making it unavailable for withdraws.
     pub fn hold_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+        self.check_locked()?;
+
         if amount <= Decimal::ZERO {
             return Err(TransactionError::NonPositiveAmount);
         }
@@ -82,6 +94,8 @@ impl Account {
 
     /// Release account funds, making it available for withdraws again.
     pub fn unhold_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+        self.check_locked()?;
+
         if amount <= Decimal::ZERO {
             return Err(TransactionError::NonPositiveAmount);
         }
@@ -90,6 +104,14 @@ impl Account {
         }
         self.funds.held -= amount;
         Ok(())
+    }
+
+    /// Raise an error if account is locked.
+    fn check_locked(&self) -> Result<(), TransactionError> {
+        match self.is_locked {
+            false => Ok(()),
+            true => Err(TransactionError::AccountLocked(self.id)),
+        }
     }
 }
 
@@ -275,5 +297,22 @@ mod tests {
             assert_eq!(result, Err(InsufficientFunds));
             assert_eq!(acc.funds.held, held);
         }
+    }
+
+    #[test]
+    fn test_locked_account_operations() {
+        let mut acc = Account::new_with_funds(
+            0,
+            Funds {
+                total: dec!(10),
+                held: dec!(10),
+            },
+        );
+        acc.is_locked = true;
+        let amount = dec!(1);
+        assert_eq!(acc.deposit_funds(amount), Err(AccountLocked(0)));
+        assert_eq!(acc.withdraw_funds(amount), Err(AccountLocked(0)));
+        assert_eq!(acc.hold_funds(amount), Err(AccountLocked(0)));
+        assert_eq!(acc.unhold_funds(amount), Err(AccountLocked(0)));
     }
 }

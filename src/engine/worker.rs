@@ -173,6 +173,7 @@ impl AccountWorker {
             DisputeResolution::ChargedBack => {
                 self.account.withdraw_funds(disputed_tx.amount())?;
                 disputed_tx.status = TransactionStatus::ChargedBack;
+                self.account.is_locked = true;
             }
         }
 
@@ -191,3 +192,4 @@ pub async fn run(mut worker: AccountWorker) -> Result<(), TransactionError> {
 
 // Test deposit, open dispute, deposit again with same id
 // Test deposit, open dispute, resolve dispute, open new dispute: success expected, old resolved dispute is expected to purge
+// Test deposit, deposit, open dispute, chargeback, withdraw.

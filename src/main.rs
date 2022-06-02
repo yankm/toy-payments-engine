@@ -152,6 +152,9 @@ mod error {
         #[error("insufficient funds")]
         InsufficientFunds,
 
+        #[error("account {0} is locked")]
+        AccountLocked(AccountId),
+
         #[error("transaction {0} has already been processed")]
         DuplicatedTransaction(TransactionId),
 
