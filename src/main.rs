@@ -3,7 +3,7 @@ extern crate core;
 mod account;
 mod engine;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 
 use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand};
@@ -270,7 +270,7 @@ mod producer {
 
     impl CSVTransactionProducer {
         pub fn new(
-            csv_path: &str,
+            csv_path: String,
             payment_engine_sender: mpsc::Sender<PaymentsEngineCommand>,
         ) -> Self {
             Self {
@@ -299,7 +299,10 @@ mod producer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let csv_path = "test.csv";
+    let csv_path = std::env::args().nth(1).ok_or(anyhow!(
+        "missing input file name. Usage: {} <filename>",
+        std::env::args().nth(0).unwrap()
+    ))?;
 
     let (engine_sender, engine_receiver) = mpsc::channel(64);
     let engine = PaymentsEngine::new(engine_receiver);
