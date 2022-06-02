@@ -7,7 +7,6 @@ use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 
 use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand};
-
 use crate::producer::{run_producer, CSVTransactionProducer};
 
 const DECIMAL_MAX_PRECISION: u32 = 4;
@@ -179,10 +178,10 @@ mod error {
 }
 
 mod producer {
-    use std::fs::File;
     use std::path::PathBuf;
 
     use anyhow::Result;
+    use csv_async;
     use rust_decimal::Decimal;
     use serde::Deserialize;
 
@@ -281,14 +280,15 @@ mod producer {
     }
 
     pub async fn run_producer(p: CSVTransactionProducer) -> Result<()> {
-        let f = File::open(p.csv_path)?;
-        let mut rdr = csv::ReaderBuilder::new()
-            .trim(csv::Trim::All)
-            .from_reader(f);
+        let f = tokio::fs::File::open(p.csv_path).await?;
+        let mut rdr = csv_async::AsyncReaderBuilder::new()
+            .trim(csv_async::Trim::All)
+            .flexible(true)
+            .create_reader(f);
 
-        let headers = rdr.headers()?.clone();
-        let mut record = csv::StringRecord::new();
-        while rdr.read_record(&mut record)? {
+        let headers = rdr.headers().await?.clone();
+        let mut record = csv_async::StringRecord::new();
+        while rdr.read_record(&mut record).await? {
             let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
             p.payment_engine_sender.send(tx_record.try_into()?).await?;
         }
