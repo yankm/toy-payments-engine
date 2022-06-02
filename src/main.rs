@@ -1,3 +1,5 @@
+extern crate core;
+
 mod account;
 mod engine;
 
@@ -12,15 +14,24 @@ const DECIMAL_MAX_PRECISION: u32 = 4;
 
 mod types {
     use crate::account::AccountId;
+    use core::fmt;
     use rust_decimal::Decimal;
-    use uuid::Uuid;
 
     pub type TransactionId = u32;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Copy, Clone, PartialEq)]
     pub enum TransactionKind {
         Deposit,
         Withdrawal,
+    }
+
+    impl fmt::Display for TransactionKind {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match *self {
+                TransactionKind::Deposit => write!(f, "Deposit"),
+                TransactionKind::Withdrawal => write!(f, "Withdrawal"),
+            }
+        }
     }
 
     #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +73,10 @@ mod types {
             }
         }
 
+        pub fn kind(&self) -> TransactionKind {
+            self.kind
+        }
+
         pub fn id(&self) -> TransactionId {
             self.id
         }
@@ -75,24 +90,27 @@ mod types {
         }
     }
 
-    pub type DisputeId = Uuid;
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum DisputeResolution {
+        /// Dispute resolved with a cancel, related transaction **has not been reversed**.
+        Cancelled,
+        /// Dispute resolved with a chargeback, related transaction **has been reversed**.
+        ChargedBack,
+    }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     pub enum DisputeStatus {
         /// Dispute has been created, but not started yet.
         Created,
         /// Dispute has been initiated and is currently in progress.
         InProgress,
-        /// Dispute has been cancelled, related transaction **has not been reversed**.
-        Cancelled,
-        /// Dispute has been resolved, related transaction **has been reversed**.
-        Resolved,
+        /// Dispute has been resolved.
+        Resolved(DisputeResolution),
     }
 
     /// A customer's claim that a past transaction was erroneous and should be reversed.
     #[derive(Debug, Clone)]
     pub struct Dispute {
-        id: DisputeId,
         account_id: AccountId,
         tx_id: TransactionId,
         pub status: DisputeStatus,
@@ -101,7 +119,6 @@ mod types {
     impl Dispute {
         pub fn new(account_id: AccountId, tx_id: TransactionId) -> Self {
             Self {
-                id: Uuid::new_v4(),
                 account_id,
                 tx_id,
                 status: DisputeStatus::Created,
@@ -120,7 +137,7 @@ mod types {
 
 mod error {
     use crate::account::AccountId;
-    use crate::types::TransactionId;
+    use crate::types::{TransactionId, TransactionKind};
     use thiserror::Error;
 
     /// Errors that may happen during transaction processing.
@@ -144,8 +161,17 @@ mod error {
         #[error("transaction {0} not found")]
         TransactionNotFound(TransactionId),
 
-        #[error("cannot open dispute for transaction {0}: {1}")]
-        TransactionDisputeNotAllowed(TransactionId, &'static str),
+        #[error("disputes are not supported for transactions of type '{0}'")]
+        DisputeNotSupported(TransactionKind),
+
+        #[error("transaction {0} {1}")]
+        TransactionInvalidStatus(TransactionId, &'static str),
+
+        #[error("dispute for transaction {0} not found")]
+        TransactionDisputeNotFound(TransactionId),
+
+        #[error("transaction {0} {1}")]
+        TransactionDisputeInvalidStatus(TransactionId, &'static str),
     }
 }
 
@@ -205,7 +231,14 @@ mod producer {
                     let d = Dispute::new(self.client, self.tx);
                     Ok(PaymentsCommand::OpenDispute(d))
                 }
-                _ => unimplemented!("try_into unimplemented"),
+                TransactionRecordType::Resolve => {
+                    let d = Dispute::new(self.client, self.tx);
+                    Ok(PaymentsCommand::CancelDispute(d))
+                }
+                TransactionRecordType::Chargeback => {
+                    let d = Dispute::new(self.client, self.tx);
+                    Ok(PaymentsCommand::ChargebackDispute(d))
+                }
             }
         }
     }

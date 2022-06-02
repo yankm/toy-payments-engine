@@ -19,6 +19,8 @@ pub enum PaymentsCommand {
     DepositFunds(Transaction),
     WithdrawFunds(Transaction),
     OpenDispute(Dispute),
+    CancelDispute(Dispute),
+    ChargebackDispute(Dispute),
 }
 
 impl PaymentsCommand {
@@ -26,7 +28,9 @@ impl PaymentsCommand {
     pub fn account_id(&self) -> AccountId {
         match self {
             Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.account_id(),
-            Self::OpenDispute(d) => d.account_id(),
+            Self::OpenDispute(d) | Self::CancelDispute(d) | Self::ChargebackDispute(d) => {
+                d.account_id()
+            }
         }
     }
 
@@ -34,7 +38,7 @@ impl PaymentsCommand {
     pub fn transaction_id(&self) -> TransactionId {
         match self {
             Self::DepositFunds(t) | Self::WithdrawFunds(t) => t.id(),
-            Self::OpenDispute(d) => d.tx_id(),
+            Self::OpenDispute(d) | Self::CancelDispute(d) | Self::ChargebackDispute(d) => d.tx_id(),
         }
     }
 
