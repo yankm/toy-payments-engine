@@ -168,13 +168,13 @@ mod error {
         DisputeNotSupported(TransactionKind),
 
         #[error("transaction {0} {1}")]
-        TransactionInvalidStatus(TransactionId, &'static str),
+        TransactionPreconditionFailed(TransactionId, &'static str),
 
         #[error("dispute for transaction {0} not found")]
         TransactionDisputeNotFound(TransactionId),
 
         #[error("transaction {0} {1}")]
-        TransactionDisputeInvalidStatus(TransactionId, &'static str),
+        TransactionDisputePreconditionFailed(TransactionId, &'static str),
     }
 }
 

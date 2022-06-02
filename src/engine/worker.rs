@@ -115,7 +115,7 @@ impl AccountWorker {
                 // error message.
                 TransactionStatus::Processed => "",
             };
-            return Err(TransactionError::TransactionInvalidStatus(
+            return Err(TransactionError::TransactionPreconditionFailed(
                 disputed_tx.id(),
                 reason,
             ));
@@ -153,7 +153,7 @@ impl AccountWorker {
                 // error message.
                 DisputeStatus::InProgress => "",
             };
-            return Err(TransactionError::TransactionDisputeInvalidStatus(
+            return Err(TransactionError::TransactionDisputePreconditionFailed(
                 stored_dispute.tx_id(),
                 reason,
             ));
