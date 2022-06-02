@@ -6,7 +6,7 @@ mod engine;
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-use crate::engine::{run_engine, PaymentsEngine};
+use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand};
 
 use crate::producer::{run_producer, CSVTransactionProducer};
 
@@ -305,8 +305,13 @@ async fn main() -> Result<()> {
     let engine = PaymentsEngine::new(engine_receiver);
     let engine_join = tokio::spawn(run_engine(engine));
 
-    let producer = CSVTransactionProducer::new(csv_path, engine_sender);
+    let producer = CSVTransactionProducer::new(csv_path, engine_sender.clone());
     run_producer(producer).await?;
+
+    engine_sender
+        .send(PaymentsEngineCommand::PrintOutput)
+        .await?;
+    drop(engine_sender);
 
     engine_join.await?
 }

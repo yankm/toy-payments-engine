@@ -1,4 +1,5 @@
 use crate::error::TransactionError;
+use std::fmt;
 
 use rust_decimal::Decimal;
 
@@ -112,6 +113,22 @@ impl Account {
             false => Ok(()),
             true => Err(TransactionError::AccountLocked(self.id)),
         }
+    }
+}
+
+impl fmt::Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // this must be changed along with `PaymentsEngine.process_print_output` implementation
+        // since headers are printed there.
+        write!(
+            f,
+            "{},{},{},{},{}",
+            self.id(),
+            self.funds.available(),
+            self.funds.held,
+            self.funds.total,
+            self.is_locked
+        )
     }
 }
 

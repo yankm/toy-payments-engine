@@ -68,7 +68,7 @@ impl AccountWorker {
                     }
                 }
             }
-            PaymentsEngineCommand::PrintOutput => todo!(),
+            PaymentsEngineCommand::PrintOutput => Ok(println!("{}", self.account)),
         };
 
         // Do not abort worker on command processing errors

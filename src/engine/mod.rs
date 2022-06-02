@@ -128,7 +128,14 @@ impl PaymentsEngine {
         Ok(())
     }
 
-    async fn process_print_output(&mut self) -> anyhow::Result<()> {
+    async fn process_print_output(&self) -> anyhow::Result<()> {
+        // Print headers.
+        // This must be changed along with `Account.fmt` implementation since actual rows
+        // are printed there.
+        println!("client,available,held,total,locked");
+        for (_, sender) in self.account_workers.iter() {
+            sender.send(PaymentsEngineCommand::PrintOutput).await?;
+        }
         Ok(())
     }
 
