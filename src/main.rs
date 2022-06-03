@@ -180,7 +180,7 @@ mod error {
 mod producer {
     use std::path::PathBuf;
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use csv_async;
     use rust_decimal::Decimal;
     use serde::Deserialize;
@@ -290,7 +290,13 @@ mod producer {
         let mut record = csv_async::ByteRecord::new();
         while rdr.read_byte_record(&mut record).await? {
             let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
-            p.payment_engine_sender.send(tx_record.try_into()?).await?;
+            match tx_record.try_into() {
+                Ok(cmd) => p.payment_engine_sender.send(cmd).await?,
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("failed to process record {:?}", record));
+                }
+            };
         }
 
         Ok(())
