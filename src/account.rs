@@ -38,10 +38,13 @@ impl Account {
     }
 
     #[cfg(test)]
-    fn new_with_funds(id: AccountId, funds: Funds) -> Self {
+    pub fn new_with_funds(id: AccountId, funds_total: Decimal, funds_held: Decimal) -> Self {
         Self {
             id,
-            funds,
+            funds: Funds {
+                total: funds_total,
+                held: funds_held,
+            },
             is_locked: false,
         }
     }
@@ -181,8 +184,8 @@ mod tests {
             (dec!(1.23), dec!(1.22), dec!(0.01), dec!(1.22)),
             (dec!(10), dec!(1), dec!(5), dec!(5)),
         ];
-        for (total, held, withdraw_amount, expected_total) in tests {
-            let mut acc = Account::new_with_funds(0, Funds { total, held });
+        for (funds_total, funds_held, withdraw_amount, expected_total) in tests {
+            let mut acc = Account::new_with_funds(0, funds_total, funds_held);
             acc.withdraw_funds(withdraw_amount)?;
             assert_eq!(acc.funds.total, expected_total);
         }
@@ -193,13 +196,7 @@ mod tests {
     fn test_account_withdraw_non_positive_funds() {
         let amounts = [dec!(-1), dec!(-0.1), dec!(0)];
 
-        let mut acc = Account::new_with_funds(
-            0,
-            Funds {
-                total: dec!(2.46),
-                held: dec!(0),
-            },
-        );
+        let mut acc = Account::new_with_funds(0, dec!(2.46), dec!(0));
         for amount in amounts {
             let prev_total = acc.funds.total;
             let result = acc.withdraw_funds(amount);
@@ -218,29 +215,23 @@ mod tests {
             (dec!(5), dec!(3), dec!(3)),
         ];
 
-        for (total, held, withdraw_amount) in tests {
-            let mut acc = Account::new_with_funds(0, Funds { total, held });
+        for (funds_total, funds_held, withdraw_amount) in tests {
+            let mut acc = Account::new_with_funds(0, funds_total, funds_held);
             let result = acc.withdraw_funds(withdraw_amount);
             assert_eq!(result, Err(InsufficientFunds));
-            assert_eq!(acc.funds.total, total);
+            assert_eq!(acc.funds.total, funds_total);
         }
     }
 
     #[test]
     fn test_account_hold_funds_success() -> Result<(), TransactionError> {
-        let total = dec!(10.10);
-        let mut acc = Account::new_with_funds(
-            0,
-            Funds {
-                total,
-                held: dec!(0),
-            },
-        );
+        let funds_total = dec!(10.10);
+        let mut acc = Account::new_with_funds(0, funds_total, dec!(0));
         acc.hold_funds(dec!(1.05))?;
-        assert_eq!(acc.funds.total, total);
+        assert_eq!(acc.funds.total, funds_total);
         assert_eq!(acc.funds.available(), dec!(9.05));
         acc.hold_funds(dec!(9.05))?;
-        assert_eq!(acc.funds.total, total);
+        assert_eq!(acc.funds.total, funds_total);
         assert_eq!(acc.funds.available(), dec!(0));
         Ok(())
     }
@@ -265,37 +256,37 @@ mod tests {
             (dec!(1), dec!(1), dec!(2)),
             (dec!(5), dec!(3), dec!(3)),
         ];
-        for (total, held, hold_amount) in tests {
-            let mut acc = Account::new_with_funds(0, Funds { total, held });
+        for (funds_total, funds_held, hold_amount) in tests {
+            let mut acc = Account::new_with_funds(0, funds_total, funds_held);
             let result = acc.hold_funds(hold_amount);
             assert_eq!(result, Err(InsufficientFunds));
-            assert_eq!(acc.funds.held, held);
+            assert_eq!(acc.funds.held, funds_held);
         }
     }
 
     #[test]
     fn test_account_unhold_funds_success() -> Result<(), TransactionError> {
-        let total = dec!(10.10);
-        let mut acc = Account::new_with_funds(0, Funds { total, held: total });
+        let funds_total = dec!(10.10);
+        let mut acc = Account::new_with_funds(0, funds_total, funds_total);
         acc.unhold_funds(dec!(1.05))?;
-        assert_eq!(acc.funds.held, total - dec!(1.05));
+        assert_eq!(acc.funds.held, funds_total - dec!(1.05));
         assert_eq!(acc.funds.available(), dec!(1.05));
         acc.unhold_funds(dec!(9.05))?;
         assert_eq!(acc.funds.held, dec!(0));
-        assert_eq!(acc.funds.available(), total);
+        assert_eq!(acc.funds.available(), funds_total);
         Ok(())
     }
 
     #[test]
     fn test_account_unhold_non_positive_funds() {
         let amounts = [dec!(-1), dec!(-0.1), dec!(0)];
-        let held = dec!(10);
-        let mut acc = Account::new_with_funds(0, Funds { total: held, held });
+        let funds_held = dec!(10);
+        let mut acc = Account::new_with_funds(0, funds_held, funds_held);
         for amount in amounts {
             let result = acc.unhold_funds(amount);
             let expected = Err(NonPositiveAmount);
             assert_eq!(result, expected);
-            assert_eq!(acc.funds.held, held);
+            assert_eq!(acc.funds.held, funds_held);
         }
     }
 
@@ -307,24 +298,18 @@ mod tests {
             (dec!(2), dec!(1), dec!(2)),
         ];
 
-        for (total, held, unhold_amount) in tests {
-            let mut acc = Account::new_with_funds(0, Funds { total, held });
+        for (funds_total, funds_held, unhold_amount) in tests {
+            let mut acc = Account::new_with_funds(0, funds_total, funds_held);
 
             let result = acc.unhold_funds(unhold_amount);
             assert_eq!(result, Err(InsufficientFunds));
-            assert_eq!(acc.funds.held, held);
+            assert_eq!(acc.funds.held, funds_held);
         }
     }
 
     #[test]
     fn test_locked_account_operations() {
-        let mut acc = Account::new_with_funds(
-            0,
-            Funds {
-                total: dec!(10),
-                held: dec!(10),
-            },
-        );
+        let mut acc = Account::new_with_funds(0, dec!(10), dec!(10));
         acc.is_locked = true;
         let amount = dec!(1);
         assert_eq!(acc.deposit_funds(amount), Err(AccountLocked(0)));
