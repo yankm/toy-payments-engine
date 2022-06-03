@@ -14,6 +14,10 @@ use worker::AccountWorker;
 use crate::error::TransactionError::DuplicatedTransaction;
 use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 
+// Engine and worker channel buffer sizes, in messages.
+pub const ENGINE_CHAN_BUF_SIZE: usize = 512;
+pub const WORKER_CHAN_BUF_SIZE: usize = 64;
+
 /// Represents commands payment engine can process.
 #[derive(Debug)]
 pub enum PaymentsEngineCommand {
@@ -145,7 +149,7 @@ impl PaymentsEngine {
         account_id: AccountId,
         cmd: PaymentsEngineCommand,
     ) -> anyhow::Result<()> {
-        let (sender, receiver) = mpsc::channel(64);
+        let (sender, receiver) = mpsc::channel(WORKER_CHAN_BUF_SIZE);
         let worker = AccountWorker::new(receiver, Account::new(account_id));
         let join = tokio::spawn(worker::run(worker));
         sender.send(cmd).await?;

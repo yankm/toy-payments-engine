@@ -6,7 +6,7 @@ mod engine;
 use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 
-use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand};
+use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand, ENGINE_CHAN_BUF_SIZE};
 use crate::producer::{run_producer, CSVTransactionProducer};
 
 const DECIMAL_MAX_PRECISION: u32 = 4;
@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
         std::env::args().nth(0).unwrap()
     ))?;
 
-    let (engine_sender, engine_receiver) = mpsc::channel(64);
+    let (engine_sender, engine_receiver) = mpsc::channel(ENGINE_CHAN_BUF_SIZE);
     let engine = PaymentsEngine::new(engine_receiver);
     let engine_join = tokio::spawn(run_engine(engine));
 
