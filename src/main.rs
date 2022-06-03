@@ -286,9 +286,9 @@ mod producer {
             .flexible(true)
             .create_reader(f);
 
-        let headers = rdr.headers().await?.clone();
-        let mut record = csv_async::StringRecord::new();
-        while rdr.read_record(&mut record).await? {
+        let headers = rdr.byte_headers().await?.clone();
+        let mut record = csv_async::ByteRecord::new();
+        while rdr.read_byte_record(&mut record).await? {
             let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
             p.payment_engine_sender.send(tx_record.try_into()?).await?;
         }
