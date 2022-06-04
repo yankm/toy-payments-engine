@@ -4,12 +4,13 @@ mod account;
 mod engine;
 mod producer;
 
-use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 
 use tokio::io::AsyncWriteExt;
 
 use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand, ENGINE_CHAN_BUF_SIZE};
+use crate::error::Result;
+use crate::error::TPEError::CLIError;
 use crate::producer::{run_producer, CSVTransactionProducer};
 
 /// Maximum allowed precision for input decimals, in places past decimal.
@@ -141,44 +142,125 @@ mod types {
 }
 
 mod error {
+
     use crate::account::AccountId;
     use crate::types::{TransactionId, TransactionKind};
     use thiserror::Error;
+    use tokio::sync::mpsc;
+
+    pub type Result<T> = std::result::Result<T, TPEError>;
+
+    /// Composite error type to encompass all error types toy payments engine produces.
+    /// Short for ToyPaymentsEngineError.
+    #[derive(Debug, Error, PartialEq)]
+    pub enum TPEError {
+        /// Logical errors that may happen during transaction processing.
+        #[error("Failed to process transaction: {0}")]
+        TransactionError(#[from] TransactionErrorKind),
+
+        /// Tokio runtime errors.
+        #[error("TokioRuntimeError: {0}")]
+        TokioRuntimeError(TokioRuntimeErrorKind),
+
+        /// Errors related to invalid input, e.g. empty amount field or unsupported precision.
+        #[error("{0}")]
+        InvalidInputError(String),
+
+        /// Errors that may happen while processing CSV data.
+        #[error("CSVError: {0}")]
+        CSVError(String),
+
+        /// Errors regarding the command-line interface.
+        #[error("CLIError: {0}")]
+        CLIError(String),
+
+        /// Errors related to I/O.
+        #[error("IOError: {0}")]
+        IOError(String),
+    }
+
+    impl<T> From<mpsc::error::SendError<T>> for TPEError {
+        fn from(e: mpsc::error::SendError<T>) -> Self {
+            Self::TokioRuntimeError(TokioRuntimeErrorKind::ChannelSendError(format!(
+                "Failed to send PaymentsEngineCommand: {}",
+                e
+            )))
+        }
+    }
+
+    impl From<tokio::task::JoinError> for TPEError {
+        fn from(e: tokio::task::JoinError) -> Self {
+            Self::TokioRuntimeError(TokioRuntimeErrorKind::TaskJoinError(format!("{}", e)))
+        }
+    }
+
+    impl From<csv_async::Error> for TPEError {
+        fn from(e: csv_async::Error) -> Self {
+            Self::CSVError(format!("{}", e))
+        }
+    }
+
+    impl From<std::io::Error> for TPEError {
+        fn from(e: std::io::Error) -> Self {
+            Self::IOError(format!("{}", e))
+        }
+    }
+
+    /// Tokio runtime errors.
+    #[derive(Debug, Error, PartialEq)]
+    pub enum TokioRuntimeErrorKind {
+        #[error("Failed to send message over channel: {0}")]
+        ChannelSendError(String),
+
+        #[error("Failed to join task: {0}")]
+        TaskJoinError(String),
+    }
 
     /// Errors that may happen during transaction processing.
     #[derive(Debug, Clone, Error, PartialEq)]
-    pub enum TransactionError {
-        #[error("account has too much money")]
+    pub enum TransactionErrorKind {
+        /// Decimal overflow.
+        #[error("Account has too much money")]
         TooMuchMoney,
 
-        #[error("amount should be positive")]
+        /// Zero or negative amount was specified.
+        #[error("Amount should be positive")]
         NonPositiveAmount,
 
-        #[error("insufficient funds")]
+        /// Insufficient funds to perform requested transaction.
+        #[error("Insufficient funds")]
         InsufficientFunds,
 
-        #[error("account {0} is locked")]
+        /// Account is locked.
+        #[error("Account {0} is locked")]
         AccountLocked(AccountId),
 
-        #[error("transaction {0} has already been processed")]
+        /// Transaction with id `TransactionId` was already processed.
+        #[error("Transaction {0} has already been processed")]
         DuplicatedTransaction(TransactionId),
 
-        #[error("worker account id mismatch (got {0:?}, expected {1:?})")]
+        /// Command received by worker relates to another worker.
+        #[error("Worker account id mismatch (got {0:?}, expected {1:?})")]
         WorkerAccountIdMismatch(AccountId, AccountId),
 
-        #[error("transaction {0} not found")]
+        /// Transaction not found.
+        #[error("Transaction {0} not found")]
         TransactionNotFound(TransactionId),
 
-        #[error("disputes are not supported for transactions of type '{0}'")]
+        /// Disputes are not supported for the `TransactionKind`.
+        #[error("Disputes are not supported for transactions of type '{0}'")]
         DisputeNotSupported(TransactionKind),
 
-        #[error("transaction {0} {1}")]
+        /// Used when operation cannot be processed due to the current state of the transaction.
+        #[error("Transaction {0} {1}")]
         TransactionPreconditionFailed(TransactionId, &'static str),
 
-        #[error("dispute for transaction {0} not found")]
+        /// Dispute not found.
+        #[error("Dispute for transaction {0} not found")]
         TransactionDisputeNotFound(TransactionId),
 
-        #[error("transaction {0} {1}")]
+        /// Used when operation cannot be processed due to the current state of the transaction dispute.
+        #[error("Transaction {0} {1}")]
         TransactionDisputePreconditionFailed(TransactionId, &'static str),
     }
 }
@@ -200,10 +282,10 @@ async fn print_accounts_csv(engine_sender: mpsc::Sender<PaymentsEngineCommand>) 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let csv_path = std::env::args().nth(1).ok_or(anyhow!(
-        "missing input file name. Usage: {} <filename>",
+    let csv_path = std::env::args().nth(1).ok_or(CLIError(format!(
+        "Missing input file name. Usage: {} <filename>",
         std::env::args().nth(0).unwrap()
-    ))?;
+    )))?;
     let csv_file = tokio::fs::File::open(csv_path).await?;
 
     let (engine_sender, engine_receiver) = mpsc::channel(ENGINE_CHAN_BUF_SIZE);

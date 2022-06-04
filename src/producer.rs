@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use csv_async;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -8,6 +7,8 @@ use tokio::sync::mpsc;
 
 use crate::account::AccountId;
 use crate::engine::{DisputeCmd, DisputeCmdAction, PaymentsEngineCommand};
+use crate::error::TPEError::InvalidInputError;
+use crate::error::{Result, TPEError};
 use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 use crate::DECIMAL_MAX_PRECISION;
 
@@ -32,7 +33,7 @@ struct TransactionRecord {
 }
 
 impl TryInto<PaymentsEngineCommand> for TransactionRecord {
-    type Error = anyhow::Error;
+    type Error = TPEError;
 
     fn try_into(self) -> std::result::Result<PaymentsEngineCommand, Self::Error> {
         match self.type_ {
@@ -67,15 +68,15 @@ impl TryInto<PaymentsEngineCommand> for TransactionRecord {
 }
 
 /// Returns an error if amount is missing or has unsupported precision.
-fn checked_amount(maybe_amount: Option<Decimal>) -> Result<Decimal, anyhow::Error> {
-    let amount =
-        maybe_amount.ok_or_else(|| anyhow::anyhow!("amount should be present for deposits"))?;
+fn checked_amount(maybe_amount: Option<Decimal>) -> Result<Decimal> {
+    let amount = maybe_amount
+        .ok_or_else(|| InvalidInputError("amount should be present for deposits".into()))?;
     if amount.scale() > DECIMAL_MAX_PRECISION {
-        return Err(anyhow::anyhow!(
+        return Err(InvalidInputError(format!(
             "expected precision <={}, got {}",
             DECIMAL_MAX_PRECISION,
             amount.scale(),
-        ));
+        )));
     }
     Ok(amount)
 }
@@ -107,7 +108,10 @@ pub async fn run_producer<R: AsyncRead + Unpin + Send>(p: CSVTransactionProducer
         match tx_record.try_into() {
             Ok(cmd) => p.payment_engine_sender.send(cmd).await?,
             Err(e) => {
-                return Err(e).with_context(|| format!("failed to process record {:?}", record));
+                return Err(InvalidInputError(format!(
+                    "Failed to process record {:?}: {}",
+                    record, e
+                )));
             }
         };
     }
@@ -171,7 +175,7 @@ deposit,         1,     1,  1.23456
         let error = run_producer(p).await.err().expect("must be error");
         assert_eq!(
             format!("{}", error),
-            "failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"1.23456\"])"
+            format!("Failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"1.23456\"]): expected precision <={}, got 5", DECIMAL_MAX_PRECISION),
         );
 
         Ok(())
@@ -190,7 +194,7 @@ deposit,         1,     1,
         let error = run_producer(p).await.err().expect("must be error");
         assert_eq!(
             format!("{}", error),
-            "failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"\"])"
+            "Failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"\"]): amount should be present for deposits"
         );
 
         Ok(())

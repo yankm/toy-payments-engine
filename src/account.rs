@@ -1,4 +1,4 @@
-use crate::error::TransactionError;
+use crate::error::TransactionErrorKind;
 use std::fmt;
 
 use rust_decimal::Decimal;
@@ -57,67 +57,67 @@ impl Account {
     }
 
     /// Deposit funds to the account.
-    pub fn deposit_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+    pub fn deposit_funds(&mut self, amount: Decimal) -> Result<(), TransactionErrorKind> {
         self.check_locked()?;
 
         if amount <= Decimal::ZERO {
-            return Err(TransactionError::NonPositiveAmount);
+            return Err(TransactionErrorKind::NonPositiveAmount);
         }
         self.funds.total = self
             .funds
             .total
             .checked_add(amount)
-            .ok_or(TransactionError::TooMuchMoney)?;
+            .ok_or(TransactionErrorKind::TooMuchMoney)?;
         Ok(())
     }
 
     /// Withdraw funds from the account.
-    pub fn withdraw_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+    pub fn withdraw_funds(&mut self, amount: Decimal) -> Result<(), TransactionErrorKind> {
         self.check_locked()?;
 
         if amount <= Decimal::ZERO {
-            return Err(TransactionError::NonPositiveAmount);
+            return Err(TransactionErrorKind::NonPositiveAmount);
         }
         if amount > self.funds.available() {
-            return Err(TransactionError::InsufficientFunds);
+            return Err(TransactionErrorKind::InsufficientFunds);
         }
         self.funds.total -= amount;
         Ok(())
     }
 
     /// Hold account funds, making it unavailable for withdraws.
-    pub fn hold_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+    pub fn hold_funds(&mut self, amount: Decimal) -> Result<(), TransactionErrorKind> {
         self.check_locked()?;
 
         if amount <= Decimal::ZERO {
-            return Err(TransactionError::NonPositiveAmount);
+            return Err(TransactionErrorKind::NonPositiveAmount);
         }
         if amount > self.funds.available() {
-            return Err(TransactionError::InsufficientFunds);
+            return Err(TransactionErrorKind::InsufficientFunds);
         }
         self.funds.held += amount;
         Ok(())
     }
 
     /// Release account funds, making it available for withdraws again.
-    pub fn unhold_funds(&mut self, amount: Decimal) -> Result<(), TransactionError> {
+    pub fn unhold_funds(&mut self, amount: Decimal) -> Result<(), TransactionErrorKind> {
         self.check_locked()?;
 
         if amount <= Decimal::ZERO {
-            return Err(TransactionError::NonPositiveAmount);
+            return Err(TransactionErrorKind::NonPositiveAmount);
         }
         if amount > self.funds.held {
-            return Err(TransactionError::InsufficientFunds);
+            return Err(TransactionErrorKind::InsufficientFunds);
         }
         self.funds.held -= amount;
         Ok(())
     }
 
     /// Raise an error if account is locked.
-    fn check_locked(&self) -> Result<(), TransactionError> {
+    fn check_locked(&self) -> Result<(), TransactionErrorKind> {
         match self.is_locked {
             false => Ok(()),
-            true => Err(TransactionError::AccountLocked(self.id)),
+            true => Err(TransactionErrorKind::AccountLocked(self.id)),
         }
     }
 }
@@ -140,11 +140,11 @@ impl fmt::Display for Account {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::TransactionError::*;
+    use crate::error::TransactionErrorKind::*;
     use rust_decimal_macros::dec;
 
     #[test]
-    fn test_account_add_funds_success() -> Result<(), TransactionError> {
+    fn test_account_add_funds_success() -> Result<(), TransactionErrorKind> {
         let mut acc = Account::new(0);
         acc.deposit_funds(dec!(1.23))?;
         assert_eq!(acc.funds.total, dec!(1.23));
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_account_add_funds_overflow() -> Result<(), TransactionError> {
+    fn test_account_add_funds_overflow() -> Result<(), TransactionErrorKind> {
         let mut acc = Account::new(0);
         let expected_funds = Decimal::MAX - dec!(10);
         acc.deposit_funds(expected_funds)?;
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn test_account_withdraw_funds_success() -> Result<(), TransactionError> {
+    fn test_account_withdraw_funds_success() -> Result<(), TransactionErrorKind> {
         let tests = [
             // funds_total, funds_held, withdraw_amount, expected_total
             (dec!(1.23), dec!(0), dec!(1.23), dec!(0)),
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn test_account_hold_funds_success() -> Result<(), TransactionError> {
+    fn test_account_hold_funds_success() -> Result<(), TransactionErrorKind> {
         let funds_total = dec!(10.10);
         let mut acc = Account::new_with_funds(0, funds_total, dec!(0));
         acc.hold_funds(dec!(1.05))?;
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_account_unhold_funds_success() -> Result<(), TransactionError> {
+    fn test_account_unhold_funds_success() -> Result<(), TransactionErrorKind> {
         let funds_total = dec!(10.10);
         let mut acc = Account::new_with_funds(0, funds_total, funds_total);
         acc.unhold_funds(dec!(1.05))?;

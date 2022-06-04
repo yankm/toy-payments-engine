@@ -2,12 +2,15 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
+use crate::error::Result;
+
 use crate::account::{Account, AccountId};
 use crate::engine::{DisputeCmdAction, PaymentsEngineCommand, TxCmdAction};
-use crate::error::TransactionError;
-use crate::error::TransactionError::{
-    DisputeNotSupported, TransactionDisputeNotFound, TransactionNotFound, WorkerAccountIdMismatch,
+use crate::error::TransactionErrorKind::{
+    DisputeNotSupported, TransactionDisputeNotFound, TransactionDisputePreconditionFailed,
+    TransactionNotFound, WorkerAccountIdMismatch,
 };
+use crate::error::{TPEError, TransactionErrorKind};
 use crate::types::{
     Dispute, DisputeResolution, DisputeStatus, Transaction, TransactionId, TransactionKind,
     TransactionStatus,
@@ -35,18 +38,14 @@ impl AccountWorker {
         self.account.id()
     }
 
-    pub async fn process_command(
-        &mut self,
-        cmd: &PaymentsEngineCommand,
-    ) -> Result<(), TransactionError> {
+    pub async fn process_command(&mut self, cmd: &PaymentsEngineCommand) -> Result<()> {
         log::debug!("Worker {} got cmd {:?}", self.id(), cmd);
-        match cmd {
+        let result = match cmd {
             PaymentsEngineCommand::TransactionCommand(ref t_cmd) => {
                 if t_cmd.tx.account_id() != self.account.id() {
-                    return Err(WorkerAccountIdMismatch(
-                        t_cmd.tx.account_id(),
-                        self.account.id(),
-                    ));
+                    return Err(
+                        WorkerAccountIdMismatch(t_cmd.tx.account_id(), self.account.id()).into(),
+                    );
                 };
                 match t_cmd.action {
                     TxCmdAction::Deposit => self.process_deposit(&t_cmd.tx),
@@ -58,7 +57,8 @@ impl AccountWorker {
                     return Err(WorkerAccountIdMismatch(
                         d_cmd.dispute.account_id(),
                         self.account.id(),
-                    ));
+                    )
+                    .into());
                 };
                 match d_cmd.action {
                     DisputeCmdAction::OpenDispute => self.process_open_dispute(&d_cmd.dispute),
@@ -71,17 +71,17 @@ impl AccountWorker {
                 }
             }
             PaymentsEngineCommand::StreamAccountsCSV(sender) => {
-                // FIXME: will be fixed in the next commit
-                sender.send(format!("{}", self.account)).await.unwrap();
+                sender.send(format!("{}", self.account)).await?;
                 Ok(())
             }
-        }
+        };
+        result.map_err(TPEError::from)
     }
 
     /// Deposit funds to account.
-    pub fn process_deposit(&mut self, tx: &Transaction) -> Result<(), TransactionError> {
+    pub fn process_deposit(&mut self, tx: &Transaction) -> Result<()> {
         if self.transactions.get(&tx.id()).is_some() {
-            return Err(TransactionError::DuplicatedTransaction(tx.id()));
+            return Err(TransactionErrorKind::DuplicatedTransaction(tx.id()).into());
         }
 
         self.account.deposit_funds(tx.amount())?;
@@ -92,9 +92,9 @@ impl AccountWorker {
     }
 
     /// Withdraw funds from account.
-    pub fn process_withdrawal(&mut self, tx: &Transaction) -> Result<(), TransactionError> {
+    pub fn process_withdrawal(&mut self, tx: &Transaction) -> Result<()> {
         if self.transactions.get(&tx.id()).is_some() {
-            return Err(TransactionError::DuplicatedTransaction(tx.id()));
+            return Err(TransactionErrorKind::DuplicatedTransaction(tx.id()).into());
         }
 
         self.account.withdraw_funds(tx.amount())?;
@@ -105,7 +105,7 @@ impl AccountWorker {
     }
 
     /// Open dispute regarding previous account transaction, hold funds equals to the tx amount.
-    pub fn process_open_dispute(&mut self, d: &Dispute) -> Result<(), TransactionError> {
+    pub fn process_open_dispute(&mut self, d: &Dispute) -> Result<()> {
         let disputed_tx = self
             .transactions
             .get_mut(&d.tx_id())
@@ -113,7 +113,7 @@ impl AccountWorker {
 
         // only deposit transactions can be disputed
         if disputed_tx.kind() != TransactionKind::Deposit {
-            return Err(DisputeNotSupported(disputed_tx.kind()));
+            return Err(DisputeNotSupported(disputed_tx.kind()).into());
         }
 
         // only processed transactions can be disputed
@@ -127,10 +127,11 @@ impl AccountWorker {
                 // error message.
                 TransactionStatus::Processed => "",
             };
-            return Err(TransactionError::TransactionPreconditionFailed(
+            return Err(TransactionErrorKind::TransactionPreconditionFailed(
                 disputed_tx.id(),
                 reason,
-            ));
+            )
+            .into());
         }
 
         self.account.hold_funds(disputed_tx.amount())?;
@@ -149,7 +150,7 @@ impl AccountWorker {
         &mut self,
         d: &Dispute,
         resolution: DisputeResolution,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<()> {
         let disputed_tx = self
             .transactions
             .get_mut(&d.tx_id())
@@ -170,10 +171,9 @@ impl AccountWorker {
                 // error message.
                 DisputeStatus::InProgress => "",
             };
-            return Err(TransactionError::TransactionDisputePreconditionFailed(
-                stored_dispute.tx_id(),
-                reason,
-            ));
+            return Err(
+                TransactionDisputePreconditionFailed(stored_dispute.tx_id(), reason).into(),
+            );
         }
 
         self.account.unhold_funds(disputed_tx.amount())?;
@@ -195,7 +195,7 @@ impl AccountWorker {
     }
 }
 
-pub async fn run(mut worker: AccountWorker) -> Result<(), TransactionError> {
+pub async fn run(mut worker: AccountWorker) -> Result<()> {
     while let Some(cmd) = worker.receiver.recv().await {
         // Do not abort worker on command processing errors
         if let Err(e) = worker.process_command(&cmd).await {
@@ -214,7 +214,7 @@ pub async fn run(mut worker: AccountWorker) -> Result<(), TransactionError> {
 mod tests {
     use super::*;
     use crate::engine::DisputeCmd;
-    use crate::error::TransactionError::{
+    use crate::error::TransactionErrorKind::{
         TransactionDisputePreconditionFailed, TransactionPreconditionFailed,
     };
     use anyhow::Result;
@@ -300,7 +300,7 @@ mod tests {
         for cmd in commands.iter() {
             assert_eq!(
                 worker.process_command(cmd).await,
-                Err(WorkerAccountIdMismatch(cmd_acc_id, worker_acc_id))
+                Err(WorkerAccountIdMismatch(cmd_acc_id, worker_acc_id).into())
             )
         }
 
@@ -366,7 +366,10 @@ mod tests {
         let result = worker
             .process_command(&PaymentsEngineCommand::TransactionCommand(tx2.try_into()?))
             .await;
-        assert_eq!(result, Err(TransactionError::DuplicatedTransaction(tx_id)));
+        assert_eq!(
+            result,
+            Err(TransactionErrorKind::DuplicatedTransaction(tx_id).into())
+        );
 
         Ok(())
     }
@@ -386,7 +389,7 @@ mod tests {
             let result = worker
                 .process_command(&PaymentsEngineCommand::DisputeCommand(cmd))
                 .await;
-            assert_eq!(result, Err(TransactionNotFound(0)));
+            assert_eq!(result, Err(TransactionNotFound(0).into()));
         }
     }
 
@@ -426,7 +429,7 @@ mod tests {
             .await;
         assert_eq!(
             result,
-            Err(DisputeNotSupported(TransactionKind::Withdrawal))
+            Err(DisputeNotSupported(TransactionKind::Withdrawal).into())
         );
 
         Ok(())
@@ -456,7 +459,7 @@ mod tests {
             let result = worker
                 .process_command(&PaymentsEngineCommand::DisputeCommand(d_cmd))
                 .await;
-            assert_eq!(result, Err(TransactionPreconditionFailed(0, reason)));
+            assert_eq!(result, Err(TransactionPreconditionFailed(0, reason).into()));
         }
 
         Ok(())
@@ -520,7 +523,7 @@ mod tests {
             let result = worker
                 .process_command(&PaymentsEngineCommand::DisputeCommand(d_cmd))
                 .await;
-            assert_eq!(result, Err(TransactionError::InsufficientFunds));
+            assert_eq!(result, Err(TransactionErrorKind::InsufficientFunds.into()));
 
             // no change is expected for dispute status
             let stored_dispute = worker.disputes.get(&0).expect("dispute has not been saved");
@@ -552,7 +555,7 @@ mod tests {
             let result = worker
                 .process_command(&PaymentsEngineCommand::DisputeCommand(d_cmd))
                 .await;
-            assert_eq!(result, Err(TransactionDisputeNotFound(0)));
+            assert_eq!(result, Err(TransactionDisputeNotFound(0).into()));
         }
 
         Ok(())
@@ -591,7 +594,10 @@ mod tests {
                 let result = worker
                     .process_command(&PaymentsEngineCommand::DisputeCommand(d_cmd))
                     .await;
-                assert_eq!(result, Err(TransactionDisputePreconditionFailed(0, reason)));
+                assert_eq!(
+                    result,
+                    Err(TransactionDisputePreconditionFailed(0, reason).into())
+                );
             }
         }
 

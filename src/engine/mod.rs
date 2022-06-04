@@ -2,16 +2,15 @@ mod worker;
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow;
-
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::account::{Account, AccountId, CSV_HEADERS};
-use crate::error::TransactionError;
+
+use crate::error::Result;
 use worker::AccountWorker;
 
-use crate::error::TransactionError::DuplicatedTransaction;
+use crate::error::TransactionErrorKind::DuplicatedTransaction;
 use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 
 // Engine and worker channel buffer sizes, in messages.
@@ -74,7 +73,7 @@ pub struct PaymentsEngine {
     /// Ledger containing sender-channels of account workers spawned.
     account_workers: HashMap<AccountId, mpsc::Sender<PaymentsEngineCommand>>,
     /// Contains join handles of spawned workers, used for worker graceful shutdown.
-    worker_joins: Vec<(AccountId, JoinHandle<Result<(), TransactionError>>)>,
+    worker_joins: Vec<(AccountId, JoinHandle<Result<()>>)>,
     /// Contains ids of processed transactions.
     processed_tx_ids: HashSet<TransactionId>,
 }
@@ -90,7 +89,7 @@ impl PaymentsEngine {
     }
 
     /// Lazily spawns account workers and delegates commands to them.
-    pub async fn process_command(&mut self, cmd: PaymentsEngineCommand) -> anyhow::Result<()> {
+    pub async fn process_command(&mut self, cmd: PaymentsEngineCommand) -> Result<()> {
         log::debug!("Engine: got command {:?}", cmd);
 
         match cmd {
@@ -104,12 +103,12 @@ impl PaymentsEngine {
         Ok(())
     }
 
-    async fn process_transaction(&mut self, cmd: TxCmd) -> anyhow::Result<()> {
+    async fn process_transaction(&mut self, cmd: TxCmd) -> Result<()> {
         let tx_id = cmd.tx.id();
 
         // Avoid processing same transactions twice.
         if self.processed_tx_ids.contains(&tx_id) {
-            return Err(anyhow::anyhow!(DuplicatedTransaction(tx_id)));
+            return Err(DuplicatedTransaction(tx_id).into());
         }
 
         let account_id = cmd.tx.account_id();
@@ -124,7 +123,7 @@ impl PaymentsEngine {
         Ok(())
     }
 
-    async fn process_dispute(&mut self, cmd: DisputeCmd) -> anyhow::Result<()> {
+    async fn process_dispute(&mut self, cmd: DisputeCmd) -> Result<()> {
         let account_id = cmd.dispute.account_id();
         let send_cmd = PaymentsEngineCommand::DisputeCommand(cmd);
         match self.account_workers.get(&account_id) {
@@ -135,7 +134,7 @@ impl PaymentsEngine {
     }
 
     /// Sends CSV records to `sender`. First message is headers, other are rows, unordered.
-    async fn process_stream_accounts_csv(&self, chan: mpsc::Sender<String>) -> anyhow::Result<()> {
+    async fn process_stream_accounts_csv(&self, chan: mpsc::Sender<String>) -> Result<()> {
         // Send headers
         chan.send(String::from(CSV_HEADERS)).await?;
         for (_, worker_sender) in self.account_workers.iter() {
@@ -151,7 +150,7 @@ impl PaymentsEngine {
         &mut self,
         account_id: AccountId,
         cmd: PaymentsEngineCommand,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let (sender, receiver) = mpsc::channel(WORKER_CHAN_BUF_SIZE);
         let worker = AccountWorker::new(receiver, Account::new(account_id));
         let join = tokio::spawn(worker::run(worker));
@@ -182,7 +181,7 @@ impl PaymentsEngine {
     }
 }
 
-pub async fn run_engine(mut engine: PaymentsEngine) -> anyhow::Result<()> {
+pub async fn run_engine(mut engine: PaymentsEngine) -> Result<()> {
     while let Some(cmd) = engine.receiver.recv().await {
         engine.process_command(cmd).await?
     }
@@ -193,6 +192,7 @@ pub async fn run_engine(mut engine: PaymentsEngine) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TPEError;
     use crate::types::TransactionKind;
     use anyhow::Result;
     use rust_decimal_macros::dec;
@@ -213,8 +213,8 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert_eq!(
-            format!("{}", result.err().unwrap()),
-            format!("{}", DuplicatedTransaction(0))
+            TPEError::from(result.err().unwrap()),
+            TPEError::from(DuplicatedTransaction(0))
         );
 
         Ok(())
