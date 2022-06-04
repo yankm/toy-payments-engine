@@ -48,7 +48,7 @@ mod types {
     }
 
     /// A reversible action of moving funds in and out of customer account.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     pub struct Transaction {
         kind: TransactionKind,
         id: TransactionId,
@@ -109,7 +109,7 @@ mod types {
     }
 
     /// A customer's claim that a past transaction was erroneous and should be reversed.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     pub struct Dispute {
         account_id: AccountId,
         tx_id: TransactionId,
@@ -184,12 +184,13 @@ async fn main() -> Result<()> {
         "missing input file name. Usage: {} <filename>",
         std::env::args().nth(0).unwrap()
     ))?;
+    let csv_file = tokio::fs::File::open(csv_path).await?;
 
     let (engine_sender, engine_receiver) = mpsc::channel(ENGINE_CHAN_BUF_SIZE);
     let engine = PaymentsEngine::new(engine_receiver);
     let engine_join = tokio::spawn(run_engine(engine));
 
-    let producer = CSVTransactionProducer::new(csv_path, engine_sender.clone());
+    let producer = CSVTransactionProducer::new(csv_file, engine_sender.clone());
     run_producer(producer).await?;
 
     engine_sender

@@ -1,9 +1,8 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use csv_async;
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use tokio::io::AsyncRead;
 
 use tokio::sync::mpsc;
 
@@ -81,29 +80,25 @@ fn checked_amount(maybe_amount: Option<Decimal>) -> Result<Decimal, anyhow::Erro
     Ok(amount)
 }
 
-pub struct CSVTransactionProducer {
-    csv_path: PathBuf,
+pub struct CSVTransactionProducer<R: AsyncRead + Unpin + Send> {
+    reader: R,
     payment_engine_sender: mpsc::Sender<PaymentsEngineCommand>,
 }
 
-impl CSVTransactionProducer {
-    pub fn new(
-        csv_path: String,
-        payment_engine_sender: mpsc::Sender<PaymentsEngineCommand>,
-    ) -> Self {
+impl<R: AsyncRead + Unpin + Send> CSVTransactionProducer<R> {
+    pub fn new(reader: R, payment_engine_sender: mpsc::Sender<PaymentsEngineCommand>) -> Self {
         Self {
-            csv_path: PathBuf::from(csv_path),
+            reader,
             payment_engine_sender,
         }
     }
 }
 
-pub async fn run_producer(p: CSVTransactionProducer) -> Result<()> {
-    let f = tokio::fs::File::open(p.csv_path).await?;
+pub async fn run_producer<R: AsyncRead + Unpin + Send>(p: CSVTransactionProducer<R>) -> Result<()> {
     let mut rdr = csv_async::AsyncReaderBuilder::new()
         .trim(csv_async::Trim::All)
         .flexible(true)
-        .create_reader(f);
+        .create_reader(p.reader);
 
     let headers = rdr.byte_headers().await?.clone();
     let mut record = csv_async::ByteRecord::new();
@@ -118,4 +113,117 @@ pub async fn run_producer(p: CSVTransactionProducer) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use rust_decimal_macros::dec;
+
+    #[tokio::test]
+    async fn test_deserialize_csv_success() -> Result<()> {
+        let tests = vec![
+            b"\
+type,client,tx,amount
+deposit,1,1,0.1234
+"
+            .as_slice(),
+            b"\
+type,       client,    tx,  amount
+deposit,         1,     1,  0.1234
+"
+            .as_slice(),
+        ];
+
+        let expected_cmd = PaymentsEngineCommand::TransactionCommand(
+            Transaction::new(TransactionKind::Deposit, 1, 1, dec!(0.1234)).try_into()?,
+        );
+        for data in tests.into_iter() {
+            let (sender, mut receiver) = mpsc::channel(1);
+            let p = CSVTransactionProducer::new(data, sender);
+
+            run_producer(p).await?;
+
+            let cmd = receiver.recv().await.expect("cmd has not been received");
+            assert_eq!(cmd, expected_cmd);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_unsupported_precision() -> Result<()> {
+        let data = b"\
+type,       client,    tx,  amount
+deposit,         1,     1,  1.23456
+";
+
+        let (sender, _) = mpsc::channel(1);
+        let p = CSVTransactionProducer::new(data.as_slice(), sender);
+
+        let error = run_producer(p).await.err().expect("must be error");
+        assert_eq!(
+            format!("{}", error),
+            "failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"1.23456\"])"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_amount_missing() -> Result<()> {
+        let data = b"\
+type,       client,    tx,
+deposit,         1,     1,
+";
+
+        let (sender, _) = mpsc::channel(1);
+        let p = CSVTransactionProducer::new(data.as_slice(), sender);
+
+        let error = run_producer(p).await.err().expect("must be error");
+        assert_eq!(
+            format!("{}", error),
+            "failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"\"])"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_malformed_csv() -> Result<()> {
+        let tests = vec![
+            // No headers
+            b"\
+deposit,1,1,0.1234
+deposit,2,2,0.1234
+"
+            .as_slice(),
+            // Invalid types
+            b"\
+client,type,amount,tx
+deposit,1,1,0.1234
+"
+            .as_slice(),
+            // Invalid tx type
+            b"\
+type,client,tx,amount
+foobarbaz,1,1,0.1234
+"
+            .as_slice(),
+        ];
+
+        for data in tests.into_iter() {
+            let (sender, _) = mpsc::channel(1);
+            let p = CSVTransactionProducer::new(data, sender);
+
+            assert!(
+                run_producer(p).await.is_err(),
+                "{}",
+                String::from_utf8_lossy(data)
+            );
+        }
+
+        Ok(())
+    }
 }

@@ -19,21 +19,21 @@ pub const ENGINE_CHAN_BUF_SIZE: usize = 512;
 pub const WORKER_CHAN_BUF_SIZE: usize = 64;
 
 /// Represents commands payment engine can process.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum PaymentsEngineCommand {
     TransactionCommand(TxCmd),
     DisputeCommand(DisputeCmd),
     PrintOutput,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TxCmdAction {
     Deposit,
     Withdraw,
 }
 
 /// Represents transaction-related commands.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct TxCmd {
     action: TxCmdAction,
     tx: Transaction,
@@ -49,7 +49,7 @@ impl From<Transaction> for TxCmd {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DisputeCmdAction {
     OpenDispute,
     CancelDispute,
@@ -57,7 +57,7 @@ pub enum DisputeCmdAction {
 }
 
 /// Represents dispute-related commands.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DisputeCmd {
     action: DisputeCmdAction,
     dispute: Dispute,
