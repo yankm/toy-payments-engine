@@ -49,7 +49,7 @@ impl From<Transaction> for TxCmd {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DisputeCmdAction {
     OpenDispute,
     CancelDispute,
