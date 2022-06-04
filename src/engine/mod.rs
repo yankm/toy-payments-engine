@@ -243,4 +243,36 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_engine_stream_accounts_csv() -> Result<()> {
+        // one header and two rows
+        let expected_records_received = 3;
+
+        let (_, engine_receiver) = mpsc::channel(3);
+        let mut engine = PaymentsEngine::new(engine_receiver);
+
+        let tx1 = Transaction::new(TransactionKind::Deposit, 0, 0, dec!(1.234));
+        engine
+            .process_command(PaymentsEngineCommand::TransactionCommand(tx1.into()))
+            .await?;
+        let tx2 = Transaction::new(TransactionKind::Withdrawal, 1, 1, dec!(2.1932));
+        engine
+            .process_command(PaymentsEngineCommand::TransactionCommand(tx2.into()))
+            .await?;
+
+        let (csv_sender, mut csv_receiver) = mpsc::channel(3);
+        engine
+            .process_command(PaymentsEngineCommand::StreamAccountsCSV(csv_sender))
+            .await?;
+
+        let mut records_received = 0;
+        while let Some(_) = csv_receiver.recv().await {
+            records_received += 1;
+        }
+
+        assert_eq!(records_received, expected_records_received);
+
+        Ok(())
+    }
 }
