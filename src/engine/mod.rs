@@ -7,7 +7,7 @@ use anyhow;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::account::{Account, AccountId};
+use crate::account::{Account, AccountId, CSV_HEADERS};
 use crate::error::TransactionError;
 use worker::AccountWorker;
 
@@ -19,11 +19,11 @@ pub const ENGINE_CHAN_BUF_SIZE: usize = 512;
 pub const WORKER_CHAN_BUF_SIZE: usize = 64;
 
 /// Represents commands payment engine can process.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum PaymentsEngineCommand {
     TransactionCommand(TxCmd),
     DisputeCommand(DisputeCmd),
-    PrintOutput,
+    StreamAccountsCSV(mpsc::Sender<String>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -96,7 +96,9 @@ impl PaymentsEngine {
         match cmd {
             PaymentsEngineCommand::TransactionCommand(tx) => self.process_transaction(tx).await,
             PaymentsEngineCommand::DisputeCommand(d) => self.process_dispute(d).await,
-            PaymentsEngineCommand::PrintOutput => self.process_print_output().await,
+            PaymentsEngineCommand::StreamAccountsCSV(sender) => {
+                self.process_stream_accounts_csv(sender).await
+            }
         }?;
 
         Ok(())
@@ -132,13 +134,14 @@ impl PaymentsEngine {
         Ok(())
     }
 
-    async fn process_print_output(&self) -> anyhow::Result<()> {
-        // Print headers.
-        // This must be changed along with `Account.fmt` implementation since actual rows
-        // are printed there.
-        println!("client,available,held,total,locked");
-        for (_, sender) in self.account_workers.iter() {
-            sender.send(PaymentsEngineCommand::PrintOutput).await?;
+    /// Sends CSV records to `sender`. First message is headers, other are rows, unordered.
+    async fn process_stream_accounts_csv(&self, chan: mpsc::Sender<String>) -> anyhow::Result<()> {
+        // Send headers
+        chan.send(String::from(CSV_HEADERS)).await?;
+        for (_, worker_sender) in self.account_workers.iter() {
+            worker_sender
+                .send(PaymentsEngineCommand::StreamAccountsCSV(chan.clone()))
+                .await?;
         }
         Ok(())
     }

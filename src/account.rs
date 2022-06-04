@@ -3,6 +3,9 @@ use std::fmt;
 
 use rust_decimal::Decimal;
 
+// This must be kept in sync with `fmt::Display for Account` implementation.
+pub const CSV_HEADERS: &'static str = "client,available,held,total,locked\n";
+
 pub type AccountId = u16;
 
 /// Funds in a customer account. `total` is the total amount of money in account (including held funds)
@@ -121,11 +124,10 @@ impl Account {
 
 impl fmt::Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // this must be changed along with `PaymentsEngine.process_print_output` implementation
-        // since headers are printed there.
+        // This must be kept in sync with `CSV_HEADERS` constant.
         write!(
             f,
-            "{},{},{},{},{}",
+            "{},{},{},{},{}\n",
             self.id(),
             self.funds.available(),
             self.funds.held,

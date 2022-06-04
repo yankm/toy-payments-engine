@@ -7,10 +7,15 @@ mod producer;
 use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 
+use tokio::io::AsyncWriteExt;
+
 use crate::engine::{run_engine, PaymentsEngine, PaymentsEngineCommand, ENGINE_CHAN_BUF_SIZE};
 use crate::producer::{run_producer, CSVTransactionProducer};
 
+/// Maximum allowed precision for input decimals, in places past decimal.
 const DECIMAL_MAX_PRECISION: u32 = 4;
+/// Size of the channel used to gather CSV records from engine, in messages.
+const STREAM_ACCOUNTS_CSV_CHANNEL_SIZE: usize = 1024;
 
 mod types {
     use crate::account::AccountId;
@@ -178,6 +183,21 @@ mod error {
     }
 }
 
+/// Collects CSV records from engine and prints them.
+async fn print_accounts_csv(engine_sender: mpsc::Sender<PaymentsEngineCommand>) -> Result<()> {
+    let (csv_sender, mut csv_receiver) = mpsc::channel(STREAM_ACCOUNTS_CSV_CHANNEL_SIZE);
+    engine_sender
+        .send(PaymentsEngineCommand::StreamAccountsCSV(csv_sender))
+        .await?;
+
+    let mut stdout = tokio::io::stdout();
+    while let Some(record) = csv_receiver.recv().await {
+        stdout.write(record.as_bytes()).await?;
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let csv_path = std::env::args().nth(1).ok_or(anyhow!(
@@ -193,10 +213,7 @@ async fn main() -> Result<()> {
     let producer = CSVTransactionProducer::new(csv_file, engine_sender.clone());
     run_producer(producer).await?;
 
-    engine_sender
-        .send(PaymentsEngineCommand::PrintOutput)
-        .await?;
-    drop(engine_sender);
+    print_accounts_csv(engine_sender).await?;
 
     engine_join.await?
 }

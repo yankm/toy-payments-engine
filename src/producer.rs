@@ -136,9 +136,8 @@ deposit,         1,     1,  0.1234
             .as_slice(),
         ];
 
-        let expected_cmd = PaymentsEngineCommand::TransactionCommand(
-            Transaction::new(TransactionKind::Deposit, 1, 1, dec!(0.1234)).try_into()?,
-        );
+        let expected_tx_cmd =
+            Transaction::new(TransactionKind::Deposit, 1, 1, dec!(0.1234)).try_into()?;
         for data in tests.into_iter() {
             let (sender, mut receiver) = mpsc::channel(1);
             let p = CSVTransactionProducer::new(data, sender);
@@ -146,7 +145,14 @@ deposit,         1,     1,  0.1234
             run_producer(p).await?;
 
             let cmd = receiver.recv().await.expect("cmd has not been received");
-            assert_eq!(cmd, expected_cmd);
+            match cmd {
+                PaymentsEngineCommand::TransactionCommand(tx_cmd) => {
+                    assert_eq!(tx_cmd, expected_tx_cmd)
+                }
+                // One cannot simply derive `PartialEq` for `PaymentsEngineCommand` due to channel sender
+                // in one of the enum variants. So we use this hack to compare just inner command.
+                _ => unreachable!(),
+            }
         }
 
         Ok(())
