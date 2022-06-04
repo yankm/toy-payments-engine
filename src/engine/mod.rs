@@ -191,10 +191,11 @@ pub async fn run_engine(mut engine: PaymentsEngine) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::types::TransactionKind;
+    use anyhow::Result;
     use rust_decimal_macros::dec;
 
     #[tokio::test]
-    async fn test_engine_process_duplicate_transaction() -> anyhow::Result<()> {
+    async fn test_engine_process_duplicate_transaction() -> Result<()> {
         let (_, receiver) = mpsc::channel(2);
         let mut engine = PaymentsEngine::new(receiver);
 
@@ -212,6 +213,30 @@ mod tests {
             format!("{}", result.err().unwrap()),
             format!("{}", DuplicatedTransaction(0))
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_engine_spawn_workers() -> Result<()> {
+        let tests = vec![
+            PaymentsEngineCommand::TransactionCommand(
+                Transaction::new(TransactionKind::Deposit, 0, 0, dec!(0)).try_into()?,
+            ),
+            PaymentsEngineCommand::DisputeCommand(DisputeCmd::new(
+                DisputeCmdAction::OpenDispute,
+                Dispute::new(0, 0),
+            )),
+        ];
+
+        for cmd in tests.into_iter() {
+            let (_, receiver) = mpsc::channel(2);
+            let mut engine = PaymentsEngine::new(receiver);
+
+            engine.process_command(cmd).await?;
+            assert_eq!(engine.worker_joins.len(), 1);
+            assert!(engine.account_workers.contains_key(&0));
+        }
 
         Ok(())
     }
