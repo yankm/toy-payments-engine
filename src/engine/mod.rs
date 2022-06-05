@@ -17,21 +17,21 @@ use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 pub const WORKER_CHAN_BUF_SIZE: usize = 64;
 
 /// Represents commands payment engine can process.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PaymentsEngineCommand {
     TransactionCommand(TxCmd),
     DisputeCommand(DisputeCmd),
     StreamAccountsCSV(mpsc::Sender<String>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TxCmdAction {
     Deposit,
     Withdraw,
 }
 
 /// Represents transaction-related commands.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TxCmd {
     action: TxCmdAction,
     tx: Transaction,
@@ -55,7 +55,7 @@ pub enum DisputeCmdAction {
 }
 
 /// Represents dispute-related commands.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DisputeCmd {
     action: DisputeCmdAction,
     dispute: Dispute,
@@ -182,9 +182,15 @@ impl PaymentsEngine {
 
 pub async fn run_engine(mut engine: PaymentsEngine) -> Result<()> {
     while let Some(cmd) = engine.receiver.recv().await {
-        engine.process_command(cmd).await?
+        // Do not abort engine on command processing errors
+        if let Err(e) = engine.process_command(cmd.clone()).await {
+            log::error!("PaymentsEngine: Failed to process command {:?}: {}", cmd, e);
+        };
     }
+
+    // Shutdown gracefully
     engine.shutdown().await;
+
     Ok(())
 }
 
