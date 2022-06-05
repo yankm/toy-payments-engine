@@ -1,8 +1,8 @@
 use tokio::sync::mpsc;
-use toy_payments_engine::engine::{PaymentsEngine, run_engine};
+use toy_payments_engine::engine::{run_engine, PaymentsEngine};
 use toy_payments_engine::error::Result;
 use toy_payments_engine::error::TPEError::CLIError;
-use toy_payments_engine::producer::{CSVTransactionProducer, run_producer};
+use toy_payments_engine::producer::{run_producer, CSVTransactionProducer};
 use toy_payments_engine::write_accounts_csv;
 
 /// Engine channel buffer size, in messages.
@@ -10,6 +10,8 @@ pub const ENGINE_CHAN_BUF_SIZE: usize = 512;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
+
     let csv_path = std::env::args().nth(1).ok_or(CLIError(format!(
         "Missing input file name. Usage: {} <filename>",
         std::env::args().nth(0).unwrap()
