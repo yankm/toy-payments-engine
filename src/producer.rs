@@ -12,7 +12,7 @@ use crate::error::{Result, TPEError};
 use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 use crate::DECIMAL_MAX_PRECISION;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TransactionRecordType {
     Deposit,
@@ -23,7 +23,7 @@ enum TransactionRecordType {
 }
 
 /// A CSV record representing a transaction.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct TransactionRecord {
     #[serde(rename = "type")]
     type_: TransactionRecordType,
@@ -69,8 +69,7 @@ impl TryInto<PaymentsEngineCommand> for TransactionRecord {
 
 /// Returns an error if amount is missing or has unsupported precision.
 fn checked_amount(maybe_amount: Option<Decimal>) -> Result<Decimal> {
-    let amount = maybe_amount
-        .ok_or_else(|| InvalidInputError("amount should be present for deposits".into()))?;
+    let amount = maybe_amount.ok_or_else(|| InvalidInputError("amount is missing".into()))?;
     if amount.scale() > DECIMAL_MAX_PRECISION {
         return Err(InvalidInputError(format!(
             "expected precision <={}, got {}",
@@ -105,13 +104,11 @@ pub async fn run_producer<R: AsyncRead + Unpin + Send>(p: CSVTransactionProducer
     let mut record = csv_async::ByteRecord::new();
     while rdr.read_byte_record(&mut record).await? {
         let tx_record: TransactionRecord = record.deserialize(Some(&headers))?;
-        match tx_record.try_into() {
+        match tx_record.clone().try_into() {
             Ok(cmd) => p.payment_engine_sender.send(cmd).await?,
             Err(e) => {
-                return Err(InvalidInputError(format!(
-                    "Failed to process record {:?}: {}",
-                    record, e
-                )));
+                // Do not abort producer on parsing errors
+                log::error!("Failed to process record {:?}: {}", tx_record, e);
             }
         };
     }
@@ -158,44 +155,6 @@ deposit,         1,     1,  0.1234
                 _ => unreachable!(),
             }
         }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_deserialize_unsupported_precision() -> Result<()> {
-        let data = b"\
-type,       client,    tx,  amount
-deposit,         1,     1,  1.23456
-";
-
-        let (sender, _) = mpsc::channel(1);
-        let p = CSVTransactionProducer::new(data.as_slice(), sender);
-
-        let error = run_producer(p).await.err().expect("must be error");
-        assert_eq!(
-            format!("{}", error),
-            format!("Failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"1.23456\"]): expected precision <={}, got 5", DECIMAL_MAX_PRECISION),
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_deserialize_amount_missing() -> Result<()> {
-        let data = b"\
-type,       client,    tx,
-deposit,         1,     1,
-";
-
-        let (sender, _) = mpsc::channel(1);
-        let p = CSVTransactionProducer::new(data.as_slice(), sender);
-
-        let error = run_producer(p).await.err().expect("must be error");
-        assert_eq!(
-            format!("{}", error),
-            "Failed to process record ByteRecord([\"deposit\", \"1\", \"1\", \"\"]): amount should be present for deposits"
-        );
 
         Ok(())
     }

@@ -202,3 +202,9 @@ async fn new_dispute_after_chargeback() -> anyhow::Result<()> {
 async fn sample_input() -> anyhow::Result<()> {
     run_test_case("testdata/sample-input").await
 }
+
+/// Tests malformed transactions (amount missing in deposit/withdrawal, unsupported precision, etc)
+#[tokio::test]
+async fn malformed_transactions() -> anyhow::Result<()> {
+    run_test_case("testdata/malformed-transactions").await
+}
