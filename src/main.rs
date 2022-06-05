@@ -265,17 +265,21 @@ mod error {
     }
 }
 
-/// Collects CSV records from engine and prints them.
-async fn print_accounts_csv(engine_sender: mpsc::Sender<PaymentsEngineCommand>) -> Result<()> {
+/// Collects CSV records from engine and writes them using writer.
+async fn write_accounts_csv<W: AsyncWriteExt + Unpin>(
+    engine_sender: mpsc::Sender<PaymentsEngineCommand>,
+    writer: &mut W,
+) -> Result<()> {
     let (csv_sender, mut csv_receiver) = mpsc::channel(STREAM_ACCOUNTS_CSV_CHANNEL_SIZE);
     engine_sender
         .send(PaymentsEngineCommand::StreamAccountsCSV(csv_sender))
         .await?;
 
-    let mut stdout = tokio::io::stdout();
     while let Some(record) = csv_receiver.recv().await {
-        stdout.write(record.as_bytes()).await?;
+        writer.write(record.as_bytes()).await?;
     }
+
+    writer.flush().await?;
 
     Ok(())
 }
@@ -295,7 +299,8 @@ async fn main() -> Result<()> {
     let producer = CSVTransactionProducer::new(csv_file, engine_sender.clone());
     run_producer(producer).await?;
 
-    print_accounts_csv(engine_sender).await?;
+    let mut stdout = tokio::io::stdout();
+    write_accounts_csv(engine_sender, &mut stdout).await?;
 
     engine_join.await?
 }
