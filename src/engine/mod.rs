@@ -13,8 +13,7 @@ use worker::AccountWorker;
 use crate::error::TransactionErrorKind::DuplicatedTransaction;
 use crate::types::{Dispute, Transaction, TransactionId, TransactionKind};
 
-// Engine and worker channel buffer sizes, in messages.
-pub const ENGINE_CHAN_BUF_SIZE: usize = 512;
+/// Worker channel buffer size, in messages.
 pub const WORKER_CHAN_BUF_SIZE: usize = 64;
 
 /// Represents commands payment engine can process.
