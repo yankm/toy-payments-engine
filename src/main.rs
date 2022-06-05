@@ -12,10 +12,12 @@ pub const ENGINE_CHAN_BUF_SIZE: usize = 512;
 async fn main() -> Result<()> {
     env_logger::init();
 
-    let csv_path = std::env::args().nth(1).ok_or(CLIError(format!(
-        "Missing input file name. Usage: {} <filename>",
-        std::env::args().nth(0).unwrap()
-    )))?;
+    let csv_path = std::env::args().nth(1).ok_or_else(|| {
+        CLIError(format!(
+            "Missing input file name. Usage: {} <filename>",
+            std::env::args().next().unwrap()
+        ))
+    })?;
     let csv_file = tokio::fs::File::open(csv_path).await?;
 
     let (engine_sender, engine_receiver) = mpsc::channel(ENGINE_CHAN_BUF_SIZE);

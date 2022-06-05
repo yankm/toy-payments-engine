@@ -218,7 +218,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert_eq!(
-            TPEError::from(result.err().unwrap()),
+            result.err().unwrap(),
             TPEError::from(DuplicatedTransaction(0))
         );
 
@@ -272,7 +272,7 @@ mod tests {
             .await?;
 
         let mut records_received = 0;
-        while let Some(_) = csv_receiver.recv().await {
+        while (csv_receiver.recv().await).is_some() {
             records_received += 1;
         }
 

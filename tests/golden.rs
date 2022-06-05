@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc;
-use toy_payments_engine;
+
 use toy_payments_engine::engine::{run_engine, PaymentsEngine};
 use toy_payments_engine::producer::{run_producer, CSVTransactionProducer};
 use toy_payments_engine::write_accounts_csv;

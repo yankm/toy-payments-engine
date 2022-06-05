@@ -85,7 +85,7 @@ impl AccountWorker {
         }
 
         self.account.deposit_funds(tx.amount())?;
-        let mut updated_tx: Transaction = tx.clone().into();
+        let mut updated_tx: Transaction = tx.clone();
         updated_tx.status = TransactionStatus::Processed;
         self.transactions.insert(updated_tx.id(), updated_tx);
         Ok(())
@@ -98,7 +98,7 @@ impl AccountWorker {
         }
 
         self.account.withdraw_funds(tx.amount())?;
-        let mut updated_tx: Transaction = tx.clone().into();
+        let mut updated_tx: Transaction = tx.clone();
         updated_tx.status = TransactionStatus::Processed;
         self.transactions.insert(updated_tx.id(), updated_tx);
         Ok(())
@@ -109,7 +109,7 @@ impl AccountWorker {
         let disputed_tx = self
             .transactions
             .get_mut(&d.tx_id())
-            .ok_or(TransactionNotFound(d.tx_id()))?;
+            .ok_or_else(|| TransactionNotFound(d.tx_id()))?;
 
         // only deposit transactions can be disputed
         if disputed_tx.kind() != TransactionKind::Deposit {
@@ -138,7 +138,7 @@ impl AccountWorker {
 
         disputed_tx.status = TransactionStatus::DisputeInProgress;
 
-        let mut updated_d: Dispute = d.clone().into();
+        let mut updated_d: Dispute = d.clone();
         updated_d.status = DisputeStatus::InProgress;
         self.disputes.insert(disputed_tx.id(), updated_d);
 
@@ -154,12 +154,12 @@ impl AccountWorker {
         let disputed_tx = self
             .transactions
             .get_mut(&d.tx_id())
-            .ok_or(TransactionNotFound(d.tx_id()))?;
+            .ok_or_else(|| TransactionNotFound(d.tx_id()))?;
 
         let stored_dispute = self
             .disputes
             .get_mut(&d.tx_id())
-            .ok_or(TransactionDisputeNotFound(d.tx_id()))?;
+            .ok_or_else(|| TransactionDisputeNotFound(d.tx_id()))?;
 
         // only in-progress disputes can be resolved
         if stored_dispute.status != DisputeStatus::InProgress {

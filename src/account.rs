@@ -4,7 +4,7 @@ use std::fmt;
 use rust_decimal::Decimal;
 
 // This must be kept in sync with `fmt::Display for Account` implementation.
-pub const CSV_HEADERS: &'static str = "client,available,held,total,locked\n";
+pub const CSV_HEADERS: &str = "client,available,held,total,locked\n";
 
 pub type AccountId = u16;
 
@@ -125,9 +125,9 @@ impl Account {
 impl fmt::Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // This must be kept in sync with `CSV_HEADERS` constant.
-        write!(
+        writeln!(
             f,
-            "{},{},{},{},{}\n",
+            "{},{},{},{},{}",
             self.id(),
             self.funds.available(),
             self.funds.held,
